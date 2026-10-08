@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'">
+  <meta name="referrer" content="no-referrer">
+  <title>Interval Chime</title>
+  <meta name="description" content="Interval chime timer for workouts. Works offline, no tracking.">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Chime">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ============ SETUP ============ -->
+  <main id="setup" class="screen" aria-labelledby="app-title">
+    <header class="top">
+      <h1 id="app-title"><span class="bell" aria-hidden="true">🔔</span> Interval Chime</h1>
+      <span id="test-badge" class="badge" hidden>TEST MODE</span>
+    </header>
+
+    <section class="group" aria-labelledby="lbl-interval">
+      <h2 id="lbl-interval">Chime every</h2>
+      <div class="grid g2" id="interval-buttons" role="group" aria-labelledby="lbl-interval"></div>
+      <div class="custom-row" id="custom-interval" hidden>
+        <label>Min
+          <input id="ci-min" type="number" inputmode="numeric" min="0" max="180" step="1">
+        </label>
+        <span class="colon">:</span>
+        <label>Sec
+          <input id="ci-sec" type="number" inputmode="numeric" min="0" max="59" step="1">
+        </label>
+      </div>
+    </section>
+
+    <section class="group" aria-labelledby="lbl-session">
+      <h2 id="lbl-session">Session length</h2>
+      <div class="grid g3" id="session-buttons" role="group" aria-labelledby="lbl-session"></div>
+      <div class="custom-row" id="custom-session" hidden>
+        <label>Minutes
+          <input id="cs-min" type="number" inputmode="numeric" min="1" max="600" step="1">
+        </label>
+      </div>
+    </section>
+
+    <p id="summary" class="summary" aria-live="polite"></p>
+
+    <section class="group options" aria-label="Options">
+      <label class="toggle">
+        <span class="tl"><strong>3-2-1 lead-in beeps</strong><small>Short beeps before each chime</small></span>
+        <input type="checkbox" id="opt-leadin" role="switch">
+        <span class="sw" aria-hidden="true"></span>
+      </label>
+      <label class="toggle">
+        <span class="tl"><strong>Ring with silent switch on</strong><small>Uses iPhone media audio. This pauses music playing in other apps.</small></span>
+        <input type="checkbox" id="opt-override" role="switch">
+        <span class="sw" aria-hidden="true"></span>
+      </label>
+      <div class="vol">
+        <label for="opt-volume"><strong>Volume</strong></label>
+        <input type="range" id="opt-volume" min="0.1" max="1" step="0.05">
+        <button type="button" id="btn-test" class="btn small">Test chime</button>
+      </div>
+    </section>
+
+    <p class="note">On iPhone, keep this app open with the screen on. Locking the phone or switching apps may pause the chimes.</p>
+    <p class="note dim">No tracking. Works offline. Settings are saved on this device.</p>
+
+    <div class="start-bar">
+      <button type="button" id="btn-start" class="btn primary huge">Start</button>
+    </div>
+  </main>
+
+  <!-- ============ RUNNING ============ -->
+  <main id="run" class="screen" hidden aria-live="off">
+    <div class="run-top">
+      <div id="r-interval" class="r-interval">Interval 1 of 60</div>
+      <div id="r-every" class="r-every">every 0:30</div>
+    </div>
+
+    <div class="count-wrap">
+      <div id="r-label" class="r-label">Next chime in</div>
+      <div id="r-count" class="r-count" role="timer" aria-atomic="true">0:30</div>
+      <div class="bar"><div id="r-ibar" class="fill"></div></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span class="k">Elapsed</span><span id="r-elapsed" class="v">0:00</span></div>
+      <div class="stat"><span class="k">Remaining</span><span id="r-remaining" class="v">30:00</span></div>
+    </div>
+    <div class="bar thin" id="r-tbar-wrap"><div id="r-tbar" class="fill alt"></div></div>
+
+    <div id="audio-banner" class="banner" hidden>
+      <span>Sound was paused by iOS.</span>
+      <button type="button" id="btn-audio-fix" class="btn small">Tap to re-enable sound</button>
+    </div>
+
+    <div class="controls">
+      <button type="button" id="btn-pause" class="btn primary huge">Pause</button>
+      <button type="button" id="btn-stop" class="btn danger huge">Stop</button>
+    </div>
+    <div class="controls done-controls" hidden id="done-controls">
+      <button type="button" id="btn-again" class="btn primary huge">Again</button>
+      <button type="button" id="btn-back" class="btn huge">Done</button>
+    </div>
+
+    <p class="status"><span id="r-wake">Screen: …</span></p>
+    <p class="note small">Keep the app open. Locking the iPhone or switching apps may pause chimes.</p>
+  </main>
+
+  <div id="flash" class="flash" aria-hidden="true"></div>
+  <script src="app.js"></script>
+</body>
+</html>
