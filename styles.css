@@ -7,16 +7,18 @@
   --dim: #9aa3b5;
   --accent: #ffb020;
   --accent-ink: #1a1203;
+  --rest: #9dc8ff;
   --danger: #ff5a5f;
   --ok: #3ddc97;
   --radius: 18px;
+  --item: 48px;
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
   --safe-r: env(safe-area-inset-right, 0px);
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
@@ -32,13 +34,118 @@ button, input { font: inherit; color: inherit; }
   max-width: 560px; margin: 0 auto;
   padding: calc(14px + var(--safe-t)) calc(16px + var(--safe-r)) calc(16px + var(--safe-b)) calc(16px + var(--safe-l));
 }
+#setup.screen { padding: 0; min-height: 0; }
 
-/* ---------- setup ---------- */
-.top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 4px 0 10px; }
-h1 { font-size: 26px; margin: 0; letter-spacing: -0.02em; }
-h1 .bell { filter: saturate(1.2); }
+/* ---------- main: one wheel + start ---------- */
+.hero {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding: calc(22px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
+}
+.wheel {
+  position: relative;
+  height: 336px;
+  display: flex;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  flex: none;
+}
+.col {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none;
+  cursor: ns-resize;
+}
+.col:focus { outline: none; }
+.col:focus-visible { outline: 3px solid #fff; outline-offset: -3px; }
+.w-pad { width: 100%; pointer-events: none; }
+.w-item {
+  height: var(--item);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+  color: rgba(243, 245, 249, 0.32);
+  white-space: nowrap;
+}
+.w-item.near { color: rgba(243, 245, 249, 0.62); font-size: 23px; }
+.w-item.sel { font-size: 30px; font-weight: 800; }
+#col-work .w-item.sel { color: var(--accent); }
+#col-rest .w-item.sel { color: var(--rest); }
+#col-total .w-item.sel { color: #fff; }
+#col-total.is-open .w-item.sel { color: transparent; }
+.wheel-lens {
+  position: absolute;
+  z-index: 0;
+  left: 0; right: 0;
+  top: 50%;
+  height: var(--item);
+  transform: translateY(-50%);
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.045);
+  pointer-events: none;
+}
+.wheel-fade {
+  position: absolute;
+  z-index: 2;
+  left: 0; right: 0;
+  height: 38%;
+  pointer-events: none;
+}
+.wheel-fade.top { top: 0; background: linear-gradient(to bottom, var(--panel) 8%, rgba(22, 26, 34, 0)); }
+.wheel-fade.bot { bottom: 0; background: linear-gradient(to top, var(--panel) 8%, rgba(22, 26, 34, 0)); }
+.open-overlay {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 66.666%;
+  width: 33.333%;
+  height: var(--item);
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  pointer-events: none;
+  color: #fff;
+}
+
+#btn-start.huge {
+  margin-top: 18px;
+  min-height: 120px;
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  border-radius: 28px;
+  flex: none;
+}
+
+/* ---------- below the fold ---------- */
+.below {
+  padding: 8px calc(16px + var(--safe-r)) calc(28px + var(--safe-b)) calc(16px + var(--safe-l));
+}
+.badge { display: inline-block; background: #5b2bd6; color: #fff; font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 8px; margin: 8px 0; }
 h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 10px; font-weight: 650; }
-.badge { background: #5b2bd6; color: #fff; font-size: 12px; font-weight: 700; padding: 4px 8px; border-radius: 8px; }
 .group { margin: 18px 0; }
 .grid { display: grid; gap: 10px; }
 .g2 { grid-template-columns: repeat(2, 1fr); }
@@ -97,8 +204,6 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .note.dim { opacity: .75; font-size: 13px; }
 .note.small { font-size: 13px; text-align: center; }
 
-.start-bar { position: sticky; bottom: 0; padding: 12px 0 calc(4px + var(--safe-b)); background: linear-gradient(to bottom, rgba(11,13,18,0), var(--bg) 30%); }
-
 /* ---------- running ---------- */
 #run { display: flex; flex-direction: column; gap: 14px; }
 #run[hidden] { display: none; }
@@ -111,6 +216,8 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   font-size: clamp(96px, 30vw, 210px); line-height: 1; font-weight: 800; letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums; margin: 6px 0 14px; color: var(--accent);
 }
+.phase-rest .r-count { color: var(--rest); }
+.phase-rest .bar .fill { background: var(--rest); }
 .paused .r-count { color: var(--dim); animation: blink 1.4s steps(2, start) infinite; }
 .done .r-count { color: var(--ok); font-size: clamp(72px, 22vw, 150px); }
 @keyframes blink { to { opacity: .35; } }
@@ -131,9 +238,10 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .flash.end { background: var(--ok); }
 
 @media (max-height: 700px) {
+  .wheel { height: 288px; }
   .r-count { font-size: clamp(80px, 26vw, 160px); }
   .count-wrap { min-height: 200px; }
-  .btn.huge { min-height: 72px; font-size: 26px; }
+  .btn.huge, #btn-start.huge { min-height: 96px; font-size: 32px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .paused .r-count { animation: none; }

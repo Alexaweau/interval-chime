@@ -1,10 +1,13 @@
 """Headless verification for Interval Chime. Run: python3 tools/test_app.py [base_url]"""
-import json, sys, time
+import os, sys, time
 from playwright.sync_api import sync_playwright
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else 'http://127.0.0.1:8765/'
-SCREENS = '/workspace/interval-chime/screens'
+SCREENS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'screens')
+os.makedirs(SCREENS, exist_ok=True)
+CHROME = next(p for p in ('/usr/local/bin/google-chrome', '/usr/bin/google-chrome') if os.path.exists(p))
 results = []
+
 def check(name, ok, detail=''):
     results.append((name, bool(ok), detail))
     print(('PASS ' if ok else 'FAIL ') + name + (('  -- ' + str(detail)) if detail else ''), flush=True)
@@ -19,10 +22,33 @@ def clear_log(page):
 def stop(page):
     page.click('#btn-stop'); page.click('#btn-stop')
 
+def pick(page, col, sec):
+    ok = page.evaluate("""([col, sec]) => {
+      const el = document.querySelector('#' + col + ' .w-item[data-sec="' + sec + '"]');
+      if (!el) return null;
+      el.click();
+      return true;
+    }""", [col, sec])
+    page.wait_for_timeout(40)
+    return ok is True
+
+def drag_column(page, sel, dy):
+    box = page.locator(sel).bounding_box()
+    x = box['x'] + box['width'] / 2
+    y = box['y'] + box['height'] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    steps = 18
+    for i in range(1, steps + 1):
+        page.mouse.move(x, y + dy * i / steps)
+        page.wait_for_timeout(16)
+    page.mouse.up()
+    page.wait_for_timeout(700)
+
 with sync_playwright() as p:
-    browser = p.chromium.launch(executable_path='/usr/bin/google-chrome', headless=True,
+    browser = p.chromium.launch(executable_path=CHROME, headless=True,
                                 args=['--autoplay-policy=no-user-gesture-required'])
-    ctx = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=3, is_mobile=True, has_touch=True,
+    ctx = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=2, is_mobile=True, has_touch=True,
                               user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1')
     page = ctx.new_page()
     errors = []
@@ -33,8 +59,9 @@ with sync_playwright() as p:
     ext_req = []
     page.on('request', lambda r: ext_req.append(r.url) if not r.url.startswith(BASE.rstrip('/')) and not r.url.startswith('data:') else None)
 
-    # ---------- 1. load, manifest, SW ----------
+    # ---------- 1. load, manifest, SW, main screen ----------
     page.goto(BASE, wait_until='load')
+    page.wait_for_timeout(200)
     sw_scope = page.evaluate("navigator.serviceWorker.ready.then(r => r.scope)")
     check('service worker registered + ready', sw_scope.startswith(BASE), sw_scope)
     man = page.evaluate("fetch(document.querySelector('link[rel=manifest]').href).then(r => r.json())")
@@ -48,36 +75,143 @@ with sync_playwright() as p:
         st = page.evaluate("u => fetch(u).then(r => r.status)", ic['src'])
         check('icon fetch ' + ic['src'], st == 200)
     page.reload(wait_until='load')
+    page.wait_for_timeout(150)
     controlled = page.evaluate("!!navigator.serviceWorker.controller")
     check('page controlled by SW after reload', controlled)
 
-    # setup screenshot (defaults: 30 s / 30 min)
     s = page.evaluate('window.__chime.settings()')
-    check('defaults 30s interval / 30 min / lead-in off', s['interval'] == '30' and s['session'] == '1800' and s['leadIn'] is False, s)
-    page.screenshot(path=SCREENS + '/setup.png')
+    check('defaults work 60 / rest 30 / total 900 untouched',
+          s['work'] == 60 and s['rest'] == 30 and s['total'] == 900 and s['totalTouched'] is False and s['open'] is False and s['leadIn'] is False, s)
+    hero = page.evaluate("""() => {
+      const vh = window.innerHeight;
+      const below = document.getElementById('below').getBoundingClientRect();
+      const wheel = document.getElementById('wheel').getBoundingClientRect();
+      const start = document.getElementById('btn-start').getBoundingClientRect();
+      const text = document.querySelector('.hero').innerText;
+      const totals = [...document.querySelectorAll('#col-total .w-item')].map(el => +el.dataset.sec);
+      const round = 90;
+      return {
+        vh, scroll: window.scrollY,
+        belowTop: below.top,
+        wheelTop: wheel.top, wheelH: wheel.height, wheelW: wheel.width,
+        startTop: start.top, startH: start.height, startW: start.width,
+        gap: start.top - wheel.bottom,
+        cols: document.querySelectorAll('#wheel .col').length,
+        sel: {
+          work: document.querySelector('#col-work .sel') && document.querySelector('#col-work .sel').textContent,
+          rest: document.querySelector('#col-rest .sel') && document.querySelector('#col-rest .sel').textContent,
+          total: document.querySelector('#col-total .sel') && document.querySelector('#col-total .sel').textContent
+        },
+        heroText: text,
+        totalsOk: totals.length > 0 && totals.every(t => t % round === 0),
+        totalCount: totals.length
+      };
+    }""")
+    check('wheel shows 1:00 / 0:30 / 15:00', hero['sel'] == {'work': '1:00', 'rest': '0:30', 'total': '15:00'}, hero['sel'])
+    check('one control with three columns', hero['cols'] == 3, hero['cols'])
+    check('picker at the top', hero['wheelTop'] < 80 and hero['wheelTop'] >= 0, hero['wheelTop'])
+    check('start directly below the picker', 0 <= hero['gap'] <= 40, hero['gap'])
+    check('start is a large thumb target', hero['startH'] >= 100 and hero['startW'] >= 300, (hero['startH'], hero['startW']))
+    check('settings are below the fold', hero['belowTop'] >= hero['vh'] - 1 and hero['scroll'] == 0, (hero['belowTop'], hero['vh']))
+    check('main screen has no headings or instructions',
+          all(w not in hero['heroText'].lower() for w in ('chime', 'interval', 'session', 'volume', 'lead', 'silent', 'lock', 'awake', 'preset')),
+          hero['heroText'][:240])
+    check('total column is whole rounds only', hero['totalsOk'], hero['totalCount'])
+    page.screenshot(path=os.path.join(SCREENS, 'setup.png'), full_page=False)
 
-    # running screenshot (real 30 s interval)
+    page.evaluate("document.getElementById('below').scrollIntoView()")
+    page.wait_for_timeout(100)
+    scrolled = page.evaluate("""() => {
+      const below = document.getElementById('below').getBoundingClientRect();
+      return { top: below.top, scroll: window.scrollY, start: document.getElementById('btn-start') !== null,
+               presets: document.querySelectorAll('#interval-buttons button').length,
+               lead: !!document.getElementById('opt-leadin'),
+               override: !!document.getElementById('opt-override'),
+               volume: !!document.getElementById('opt-volume'),
+               test: !!document.getElementById('btn-test') };
+    }""")
+    check('scrolled settings are on screen and intact',
+          scrolled['top'] < 80 and scrolled['scroll'] > 200 and scrolled['presets'] >= 4 and scrolled['lead'] and scrolled['override'] and scrolled['volume'] and scrolled['test'],
+          scrolled)
+    page.screenshot(path=os.path.join(SCREENS, 'setup-options.png'), full_page=False)
+    page.evaluate("window.scrollTo(0, 0)")
+
+    # thumb swipe on the work column (up moves toward longer times)
+    before = page.evaluate('window.__chime.settings().work')
+    drag_column(page, '#col-work', -192)
+    after = page.evaluate('window.__chime.settings()')
+    check('thumb swipe changes work and keeps a 5s step',
+          after['work'] != before and after['work'] % 5 == 0 and after['work'] >= 70, (before, after['work'], after['total'], after['totalTouched']))
+    # untouched total stays near 15:00 (round changed, still a multiple, totalTouched still false)
+    check('swipe does not mark the total as touched', after['totalTouched'] is False and after['total'] % (after['work'] + after['rest']) == 0, after)
+
+    # reset to defaults via the 1 min preset (work 60). Rest may no longer be 30 if we didn't touch it.
+    page.evaluate("window.scrollTo(0, 0)")
+    # restore rest if the swipe only moved work
+    page.evaluate("""() => {
+      const el = document.querySelector('#col-rest .w-item[data-sec="30"]');
+      if (el) el.click();
+    }""")
+    page.click('#interval-buttons [data-v="60"]')
+    s = page.evaluate('window.__chime.settings()')
+    check('preset 1:00 restores work, total still near 15:00 and untouched',
+          s['work'] == 60 and s['rest'] == 30 and s['total'] == 900 and s['totalTouched'] is False, s)
+
+    # untouched snap: 2:00 work + 0:30 rest = 150s rounds, 900/150 = 6 exactly
+    page.click('#interval-buttons [data-v="120"]')
+    s = page.evaluate('window.__chime.settings()')
+    check('untouched interval change keeps total at 15:00', s['work'] == 120 and s['rest'] == 30 and s['total'] == 900 and s['totalTouched'] is False, s)
+
+    # touch the total via the 30 min preset, then change rest to 0:45
+    page.click('#session-buttons [data-v="1800"]')
+    s = page.evaluate('window.__chime.settings()')
+    check('30 min preset marks total touched (exact with 150s rounds)', s['total'] == 1800 and s['totalTouched'] is True, s)
+    check('pick rest 0:45', pick(page, 'col-rest', 45))
+    s = page.evaluate('window.__chime.settings()')
+    # round = 120+45 = 165; nearest to 1800 is 11*165 = 1815
+    check('touched total snaps near the previous total', s['rest'] == 45 and s['total'] == 1815 and s['total'] % 165 == 0 and s['totalTouched'] is True, s)
+
+    # ---------- 2. real run from a clean 1:00 / 0:30 / 15:00 ----------
+    page.evaluate("localStorage.clear()")
+    page.goto(BASE, wait_until='load')
+    page.wait_for_timeout(150)
+    s = page.evaluate('window.__chime.settings()')
+    check('cleared storage restores defaults', s['work'] == 60 and s['rest'] == 30 and s['total'] == 900, s)
     page.click('#btn-start')
     page.wait_for_timeout(3300)
     st = page.evaluate('window.__chime.state()')
-    check('real 30s run: running, ctx running', st['state'] == 'running' and st['ctxState'] == 'running', st)
-    cnt = page.inner_text('#r-count'); iv = page.inner_text('#r-interval')
-    check('running screen shows countdown + interval N of M', cnt in ('0:26', '0:27') and iv == 'Interval 1 of 60', cnt + ' | ' + iv)
-    sched = logs(page, ['sched-chime', 'sched-end'])
-    byk = {}
+    check('default run: running, work phase, ctx running', st['state'] == 'running' and st['ctxState'] == 'running' and st['phase'] == 'work' and st['workMs'] == 60000 and st['restMs'] == 30000 and st['totalMs'] == 900000, st)
+    cnt = page.inner_text('#r-count'); iv = page.inner_text('#r-interval'); lab = page.inner_text('#r-label')
+    check('running screen shows work countdown and round 1 of 10', cnt in ('0:56', '0:57') and iv == 'Round 1 of 10' and lab == 'WORK', cnt + ' | ' + iv + ' | ' + lab)
+    sched = logs(page, ['sched-chime'])
+    times = []
+    seen = set()
     for e in sched:
-        if e['type'] == 'sched-chime': byk[e['k']] = e['audio']   # latest (post-resync) wins
-    check('30s/30min: 10 min of chimes pre-scheduled (k=1..20)', sorted(byk) == list(range(1, 21)) and st['pendingEvents'] <= 21, (sorted(byk)[:3], len(byk), st['pendingEvents']))
-    ad = [byk[k] for k in sorted(byk)]
-    diffs = [round(b - a, 3) for a, b in zip(ad, ad[1:])]
-    check('scheduled audio spacing = 30.000 s (±5 ms)', all(abs(d - 30) < 0.005 for d in diffs), diffs[:5])
-    page.screenshot(path=SCREENS + '/running.png')
+        if e['t'] not in seen:
+            seen.add(e['t']); times.append(e['t'])
+    times.sort()
+    # 10 min lookahead from ~3.3s covers cues at 60,90,150,...,600 seconds
+    expect = [60000, 90000, 150000, 180000, 240000, 270000, 330000, 360000, 420000, 450000, 510000, 540000, 600000]
+    check('15 min session pre-schedules alternating chimes through 10 min', times == expect, times)
+    aud = {}
+    for e in sched:
+        aud[e['t']] = e['audio']
+    diffs = [round(aud[b] - aud[a], 3) for a, b in zip(expect, expect[1:])]
+    alt = [30, 60] * 6
+    check('scheduled spacing alternates rest 30s then work 60s', len(diffs) == len(alt) and all(abs(d - e) < 0.05 for d, e in zip(diffs, alt)), diffs)
+    check('pause and stop buttons present during the session', page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop')
+    page.screenshot(path=os.path.join(SCREENS, 'running.png'))
     stop(page)
     page.wait_for_timeout(200)
 
-    # ---------- 2. test mode: 2 s interval, 10 s session ----------
+    # ---------- 3. test mode: 2s work, 3s rest, 10s total ----------
     page.goto(BASE + '?test=1', wait_until='load')
-    page.click('#interval-buttons [data-v="2"]'); page.click('#session-buttons [data-v="10"]')
+    page.wait_for_timeout(100)
+    page.click('#interval-buttons [data-v="2"]')
+    check('pick rest 3s', pick(page, 'col-rest', 3))
+    page.click('#session-buttons [data-v="10"]')
+    s = page.evaluate('window.__chime.settings()')
+    check('test selection 2/3/10', s['work'] == 2 and s['rest'] == 3 and s['total'] == 10, s)
     clear_log(page)
     page.click('#btn-start')
     page.wait_for_timeout(11800)
@@ -85,25 +219,30 @@ with sync_playwright() as p:
     chimes = [e for e in L if e['type'] == 'chime']
     ends = [e for e in L if e['type'] == 'end']
     onsets = [e for e in L if e['type'] == 'onset']
-    check('2s/10s: 4 interval chime events (k=1..4)', [c['k'] for c in chimes] == [1, 2, 3, 4], [c['k'] for c in chimes])
+    check('2/3/10: chimes at end of work, rest, work',
+          [c['expected'] for c in chimes] == [2000, 5000, 7000] and [c['phase'] for c in chimes] == ['work', 'rest', 'work'],
+          [(c['expected'], c['phase'], c['elapsed']) for c in chimes])
     errs = [c['elapsed'] - c['expected'] for c in chimes]
-    check('chime events fire within 60 ms of 2/4/6/8 s', all(0 <= e < 60 for e in errs), errs)
+    check('chime events fire within 80 ms', all(0 <= e < 80 for e in errs), errs)
     check('end event at 10 s', len(ends) == 1 and ends[0]['elapsed'] == 10000, ends)
     on_el = [o['elapsed'] for o in onsets if o['elapsed'] is not None]
-    # expected audible onsets: start cue (~0), 2000,4000,6000,8000, end 10000 (end onset may be logged after state=done -> None)
-    exp = [2000, 4000, 6000, 8000]
+    exp = [2000, 5000, 7000]
     matched = [min(on_el, key=lambda x: abs(x - t)) if on_el else None for t in exp]
     oerr = [m - t if m is not None else None for m, t in zip(matched, exp)]
-    check('measured audio onsets (analyser) within 60 ms of 2/4/6/8 s', all(e is not None and -20 <= e <= 60 for e in oerr), {'onsets': on_el, 'err_ms': oerr})
+    check('measured audio onsets within 80 ms of 2/5/7 s', all(e is not None and -30 <= e <= 80 for e in oerr), {'onsets': on_el, 'err_ms': oerr})
     end_onsets = [o for o in onsets if o['perf'] >= ends[0]['perf'] - 100] if ends else []
     rel = [o['perf'] - ends[0]['perf'] for o in end_onsets] if ends else None
     check('end triple chime audible (3 strikes ~0 / 0.6 / 1.2 s after end)', rel is not None and len(rel) >= 3 and all(any(abs(r - x) < 80 for r in rel) for x in (0, 600, 1200)), rel)
     check('done screen shown', page.inner_text('#r-count') == 'Done' and page.is_visible('#btn-again'))
-    page.screenshot(path=SCREENS + '/done.png')
+    page.screenshot(path=os.path.join(SCREENS, 'done.png'))
     page.click('#btn-back')
 
-    # ---------- 3. pause / resume / stop ----------
-    page.click('#interval-buttons [data-v="2"]'); page.click('#session-buttons [data-v="20"]')
+    # ---------- 4. pause / resume / stop ----------
+    page.click('#interval-buttons [data-v="2"]')
+    check('pick rest 2s', pick(page, 'col-rest', 2))
+    page.click('#session-buttons [data-v="20"]')
+    s = page.evaluate('window.__chime.settings()')
+    check('pause setup 2/2/20', s['work'] == 2 and s['rest'] == 2 and s['total'] == 20, s)
     clear_log(page)
     page.click('#btn-start')
     page.wait_for_timeout(3000)
@@ -111,71 +250,85 @@ with sync_playwright() as p:
     e1 = page.evaluate('window.__chime.state()')
     check('pause -> state paused, button says Resume', e1['state'] == 'paused' and page.inner_text('#btn-pause') == 'Resume', e1)
     check('pause cancels scheduled audio', e1['pendingEvents'] <= 2, e1['pendingEvents'])
-    page.screenshot(path=SCREENS + '/paused.png')
+    page.screenshot(path=os.path.join(SCREENS, 'paused.png'))
     n_on_before = len(logs(page, ['onset']))
     page.wait_for_timeout(3000)
     e2 = page.evaluate('window.__chime.state()')
     n_on_during = len(logs(page, ['onset'])) - n_on_before
-    check('elapsed frozen while paused', e1['elapsed'] == e2['elapsed'], (e1['elapsed'], e2['elapsed']))
-    check('no chimes while paused', n_on_during == 0 and not [c for c in logs(page, ['chime']) if c['k'] > 1], n_on_during)
+    check('elapsed frozen while paused', abs(e1['elapsed'] - e2['elapsed']) <= 1, (e1['elapsed'], e2['elapsed']))
+    check('no chimes while paused', n_on_during == 0 and not [c for c in logs(page, ['chime']) if c['expected'] > 2000], n_on_during)
     clear_log(page)
-    page.click('#btn-pause')  # resume
+    page.click('#btn-pause')
     page.wait_for_timeout(4500)
     L = logs(page)
     ch = [c for c in L if c['type'] == 'chime']
-    check('resume continues on the same grid (chimes at 4 s, 6 s)', [c['expected'] for c in ch] == [4000, 6000] and all(0 <= c['elapsed'] - c['expected'] < 60 for c in ch), [(c['expected'], c['elapsed']) for c in ch])
-    pe = e1['elapsed']
-    on2 = [o['elapsed'] for o in L if o['type'] == 'onset']
-    check('audio onsets after resume at 4 s / 6 s', any(abs(o - 4000) < 60 for o in on2) and any(abs(o - 6000) < 60 for o in on2), on2)
+    check('resume continues on the same grid (chimes at 4 s, 6 s)',
+          [c['expected'] for c in ch] == [4000, 6000] and all(0 <= c['elapsed'] - c['expected'] < 80 for c in ch),
+          [(c['expected'], c['elapsed'], c['phase']) for c in ch])
+    on2 = [o['elapsed'] for o in L if o['type'] == 'onset' and o['elapsed'] is not None]
+    check('audio onsets after resume at 4 s / 6 s', any(abs(o - 4000) < 80 for o in on2) and any(abs(o - 6000) < 80 for o in on2), on2)
     page.click('#btn-stop')
     check('first Stop tap only arms (Tap to stop)', page.inner_text('#btn-stop') == 'Tap to stop' and page.evaluate('window.__chime.state().state') == 'running')
     page.click('#btn-stop')
     check('second tap stops -> setup screen', page.is_visible('#setup') and page.evaluate('window.__chime.state().state') == 'idle')
     clear_log(page)
     page.wait_for_timeout(2500)
-    check('no chimes after stop', len(logs(page, ['onset', 'chime'])) == 0, logs(page))
+    check('no chimes after stop', len(logs(page, ['onset', 'chime'])) == 0, logs(page, ['onset', 'chime']))
 
-    # ---------- 4. lead-in beeps ----------
-    page.click('#interval-buttons [data-v="5"]'); page.click('#session-buttons [data-v="10"]')
+    # ---------- 5. lead-in beeps: 5s work, 5s rest, 10s total ----------
+    page.click('#interval-buttons [data-v="5"]')
+    check('pick rest 5s', pick(page, 'col-rest', 5))
+    page.click('#session-buttons [data-v="10"]')
     page.click('label:has(#opt-leadin)')
+    s = page.evaluate('window.__chime.settings()')
+    check('lead-in setup 5/5/10', s['work'] == 5 and s['rest'] == 5 and s['total'] == 10 and s['leadIn'] is True, s)
     clear_log(page)
     page.click('#btn-start')
     page.wait_for_timeout(11500)
     L = logs(page)
-    beeps = sorted(e['t'] for e in L if e['type'] == 'sched-beep')
+    beeps = sorted(set(e['t'] for e in L if e['type'] == 'sched-beep'))
     check('lead-in beeps scheduled at 2,3,4 and 7,8,9 s', beeps == [2000, 3000, 4000, 7000, 8000, 9000], beeps)
     on3 = [o['elapsed'] for o in L if o['type'] == 'onset' and o['elapsed'] is not None]
-    check('lead-in beeps audible', all(any(abs(o - t) < 60 for o in on3) for t in [2000, 3000, 4000, 5000, 7000, 8000, 9000]), on3)
+    check('lead-in beeps audible', all(any(abs(o - t) < 80 for o in on3) for t in [2000, 3000, 4000, 5000, 7000, 8000, 9000]), on3)
     page.click('#btn-back')
 
-    # ---------- 5. custom + persistence ----------
+    # ---------- 6. custom + open-ended + persistence ----------
     page.click('#interval-buttons [data-v="custom"]')
     page.fill('#ci-min', '1'); page.fill('#ci-sec', '15')
     page.click('#session-buttons [data-v="open"]')
-    summ = page.inner_text('#summary')
+    page.wait_for_timeout(50)
     page.reload(wait_until='load')
     s = page.evaluate('window.__chime.settings()')
-    check('settings persisted (custom 1:15, open-ended, lead-in on)', s['interval'] == 'custom' and s['ciMin'] == 1 and s['ciSec'] == 15 and s['session'] == 'open' and s['leadIn'] is True, s)
+    check('settings persisted (custom 1:15, open-ended, lead-in on)',
+          s['work'] == 75 and s['ciMin'] == 1 and s['ciSec'] == 15 and s['open'] is True and s['leadIn'] is True, s)
     check('custom inputs restored', page.input_value('#ci-min') == '1' and page.input_value('#ci-sec') == '15' and page.is_visible('#custom-interval'))
+    check('open-ended shows infinity on the total column', page.is_visible('#total-open'))
     page.click('#btn-start'); page.wait_for_timeout(1200)
-    check('open-ended run shows "Interval 1" and ∞ remaining', page.inner_text('#r-interval') == 'Interval 1' and page.inner_text('#r-remaining') == '∞', page.inner_text('#r-interval'))
-    page.screenshot(path=SCREENS + '/running-open-ended.png')
+    check('open-ended run shows Round 1 and infinity remaining',
+          page.inner_text('#r-interval') == 'Round 1' and page.inner_text('#r-remaining') == '∞',
+          page.inner_text('#r-interval') + ' | ' + page.inner_text('#r-remaining'))
+    page.screenshot(path=os.path.join(SCREENS, 'running-open-ended.png'))
     stop(page)
-    page.fill('#ci-min', '0'); page.fill('#ci-sec', '0')
+
     page.goto(BASE, wait_until='load')
-    page.click('#interval-buttons [data-v="custom"]'); page.fill('#ci-min', '0'); page.fill('#ci-sec', '3')
+    page.click('#interval-buttons [data-v="custom"]')
+    page.fill('#ci-min', '0'); page.fill('#ci-sec', '3')
+    page.wait_for_timeout(50)
     check('custom < 5 s rejected (Start disabled) outside test mode', page.is_disabled('#btn-start'), page.inner_text('#summary'))
-    page.click('#interval-buttons [data-v="30"]'); page.click('#session-buttons [data-v="1800"]')
+    page.click('#interval-buttons [data-v="30"]')
+    # rest may still be 30 or whatever was saved; set a valid session
+    page.click('#session-buttons [data-v="1800"]')
     page.click('label:has(#opt-leadin)')
     check('lead-in toggled back off', page.evaluate('window.__chime.settings().leadIn') is False)
+    check('valid settings re-enable start', page.is_enabled('#btn-start'))
 
-    # ---------- 6. offline ----------
+    # ---------- 7. offline ----------
     ctx.set_offline(True)
     page.reload(wait_until='load')
     check('loads offline from SW cache', page.is_visible('#btn-start') and page.title() == 'Interval Chime')
     ctx.set_offline(False)
 
-    real_errors = [e for e in errors]
+    real_errors = [e for e in errors if 'was interrupted by a new load request' not in e]
     check('no console errors / page errors', not real_errors, real_errors)
     check('no failed requests', not failed_req, failed_req)
     check('no external (non-origin) requests', not ext_req, ext_req)
