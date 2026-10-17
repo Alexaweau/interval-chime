@@ -1,11 +1,20 @@
-/* Interval Chime: plain JS, no dependencies, no tracking. */
+/* Interval Chime: plain JS, no dependencies, no tracking.
+   Two alternating intervals (work, rest). A chime marks the end of each,
+   and a triple chime marks the end of the session. */
 (function () {
   'use strict';
 
   var params = new URLSearchParams(location.search);
   var TEST = params.get('test') === '1';
 
-  // ---------- config ----------
+  var ITEM = 48;
+  var FIFTEEN = 15 * 60;
+  var WHEEL_MAX = 60 * 60;
+  var ABS_MAX = 600 * 60;
+  var LOOKAHEAD_MS = 10 * 60 * 1000;
+  var STORE_KEY = 'intervalChime.v2';
+  var MIN_INTERVAL_S = TEST ? 1 : 5;
+
   var INTERVALS = [
     { v: '30', s: 30, label: '30<small>sec</small>' },
     { v: '60', s: 60, label: '1<small>min</small>' },
@@ -19,17 +28,14 @@
     INTERVALS.unshift({ v: '2', s: 2, label: '2<small>sec (test)</small>' }, { v: '5', s: 5, label: '5<small>sec (test)</small>' });
     SESSIONS.unshift({ v: '10', s: 10, label: '10<small>sec (test)</small>' }, { v: '20', s: 20, label: '20<small>sec (test)</small>' }, { v: '30', s: 30, label: '30<small>sec (test)</small>' });
   }
-  var MIN_INTERVAL_S = TEST ? 1 : 5;
-  var LOOKAHEAD_MS = 10 * 60 * 1000;   // pre-schedule audio up to 10 min ahead
-  var STORE_KEY = 'intervalChime.v1';
 
   var DEFAULTS = {
-    interval: '30', ciMin: 1, ciSec: 30,
-    session: '1800', csMin: 25,
+    work: 60, rest: 30, total: 900, totalTouched: false, open: false,
+    forceCustom: false, forceSessionCustom: false,
+    ciMin: 1, ciSec: 0, csMin: 15,
     leadIn: false, override: true, volume: 0.9
   };
 
-  // ---------- helpers ----------
   function $(id) { return document.getElementById(id); }
   function clampInt(v, lo, hi, dflt) {
     var n = parseInt(v, 10);
@@ -42,12 +48,27 @@
     var h = Math.floor(totalSec / 3600), m = Math.floor((totalSec % 3600) / 60), s = totalSec % 60;
     return h ? h + ':' + pad(m) + ':' + pad(s) : m + ':' + pad(s);
   }
-  function fmtDur(sec) {
-    if (sec < 60) return sec + ' s';
-    var m = Math.floor(sec / 60), s = sec % 60;
-    return s ? m + ' min ' + s + ' s' : m + ' min';
+  function fmtWheel(totalSec) {
+    totalSec = Math.max(0, Math.round(totalSec));
+    return Math.floor(totalSec / 60) + ':' + pad(totalSec % 60);
   }
   function now() { return performance.now(); }
+  function workPresets() { return INTERVALS.filter(function (i) { return i.v !== 'custom'; }).map(function (i) { return i.s; }); }
+  function sessionPresets() { return SESSIONS.map(function (i) { return i.s; }); }
+
+  // Nearest whole-round length to target. Ties go to the shorter session.
+  function nearestRounds(round, target) {
+    round = Math.max(1, round | 0);
+    target = Math.max(round, target | 0);
+    var lowerN = Math.floor(target / round);
+    if (lowerN < 1) lowerN = 1;
+    var upperN = lowerN + 1;
+    var maxN = Math.max(1, Math.floor(ABS_MAX / round));
+    if (lowerN >= maxN) return maxN * round;
+    var lowerT = lowerN * round, upperT = upperN * round;
+    if (Math.abs(target - lowerT) <= Math.abs(target - upperT)) return lowerT;
+    return upperT;
+  }
 
   var testLog = [];
   function log(ev) {
@@ -56,39 +77,53 @@
     if (testLog.length > 5000) testLog.shift();
   }
 
-  // ---------- settings ----------
   var settings = load();
   function load() {
     var s = {};
     try { s = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; } catch (e) { s = {}; }
     var out = {};
-    for (var k in DEFAULTS) out[k] = (k in s) ? s[k] : DEFAULTS[k];
-    if (out.interval !== 'custom' && !INTERVALS.some(function (i) { return i.v === out.interval; })) out.interval = DEFAULTS.interval;
-    if (['custom', 'open'].indexOf(out.session) < 0 && !SESSIONS.some(function (i) { return i.v === out.session; })) out.session = DEFAULTS.session;
+    for (var k in DEFAULTS) {
+      if (Object.prototype.hasOwnProperty.call(DEFAULTS, k)) {
+        out[k] = (s && Object.prototype.hasOwnProperty.call(s, k)) ? s[k] : DEFAULTS[k];
+      }
+    }
+    out.work = clampInt(out.work, 0, 180 * 60, DEFAULTS.work);
+    out.rest = clampInt(out.rest, 0, 180 * 60, DEFAULTS.rest);
+    out.totalTouched = !!out.totalTouched;
+    out.open = !!out.open;
+    out.forceCustom = !!out.forceCustom;
+    out.forceSessionCustom = !!out.forceSessionCustom;
+    out.leadIn = !!out.leadIn;
+    out.override = !!out.override;
+    out.volume = Math.min(1, Math.max(0.1, Number(out.volume) || DEFAULTS.volume));
     out.ciMin = clampInt(out.ciMin, 0, 180, DEFAULTS.ciMin);
     out.ciSec = clampInt(out.ciSec, 0, 59, DEFAULTS.ciSec);
     out.csMin = clampInt(out.csMin, 1, 600, DEFAULTS.csMin);
-    out.volume = Math.min(1, Math.max(0.1, Number(out.volume) || DEFAULTS.volume));
-    out.leadIn = !!out.leadIn; out.override = !!out.override;
+    var round = out.work + out.rest;
+    if (round > 0) {
+      var target = out.totalTouched ? clampInt(out.total, round, ABS_MAX, FIFTEEN) : FIFTEEN;
+      out.total = nearestRounds(round, target);
+    } else {
+      out.total = FIFTEEN;
+    }
     return out;
   }
   function save() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (e) { /* private mode */ }
   }
-  function intervalSec() {
-    if (settings.interval === 'custom') return settings.ciMin * 60 + settings.ciSec;
-    return Number(settings.interval);
-  }
-  function sessionSec() {
-    if (settings.session === 'open') return Infinity;
-    if (settings.session === 'custom') return settings.csMin * 60;
-    return Number(settings.session);
+  function retargetTotal() {
+    if (settings.open) return;
+    var round = settings.work + settings.rest;
+    if (!(round > 0)) return;
+    var target = settings.totalTouched ? settings.total : FIFTEEN;
+    settings.total = nearestRounds(round, target);
+    settings.csMin = clampInt(Math.round(settings.total / 60), 1, 600, 15);
   }
 
-  // ---------- audio ----------
+  // ---------- audio (unchanged engine: Web Audio clock, silent-switch keepalive) ----------
   var ctx = null, master = null, comp = null, analyser = null;
-  var events = [];          // scheduled sound events {start, gain, nodes[]}
-  var keepAlive = null;     // looping near-silent <audio> for iOS silent-switch override
+  var events = [];
+  var keepAlive = null;
 
   function ensureAudio() {
     if (!ctx) {
@@ -108,7 +143,6 @@
       }
       ctx.onstatechange = onCtxState;
     }
-    // iOS unlock: play a 1-sample silent buffer inside the user gesture.
     try {
       var b = ctx.createBuffer(1, 1, ctx.sampleRate);
       var src = ctx.createBufferSource(); src.buffer = b; src.connect(ctx.destination); src.start(0);
@@ -117,7 +151,6 @@
     return ctx;
   }
 
-  // Build a ~1 s, 8 kHz, near-silent (±1 LSB dither, about -90 dBFS) WAV as a data: URI.
   function silentWavURI() {
     var rate = 8000, n = rate, bytes = 44 + n * 2, buf = new ArrayBuffer(bytes), dv = new DataView(buf);
     function str(o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); }
@@ -135,10 +168,9 @@
     try { if (navigator.audioSession) navigator.audioSession.type = t; } catch (e) { /* ignore */ }
   }
 
-  // Must be called from inside a tap handler.
   function startKeepAlive() {
     if (!settings.override) { setAudioSessionType('ambient'); stopKeepAlive(); return; }
-    setAudioSessionType('playback'); // Safari 17+: Web Audio ignores the ringer switch
+    setAudioSessionType('playback');
     if (!keepAlive) {
       keepAlive = document.createElement('audio');
       keepAlive.setAttribute('playsinline', '');
@@ -168,7 +200,6 @@
     ev.nodes.push(o);
     ev.end = Math.max(ev.end, t + attack + decay + 0.05);
   }
-  // Bell partials: [ratio, amplitude, decay factor]
   var PARTIALS = [[0.5, 0.10, 1.3], [1, 1, 1], [1.0025, 0.35, 0.9], [2, 0.45, 0.62], [2.76, 0.26, 0.45], [4.07, 0.14, 0.3], [5.43, 0.07, 0.2]];
   function bell(ev, t, freq, decay, level) {
     for (var i = 0; i < PARTIALS.length; i++) {
@@ -187,7 +218,6 @@
   function playBeep(t) { var ev = newEvent(t); addOsc(ev, 'triangle', 1318.5, t, 0.32, 0.005, 0.14); return ev; }
   function playStartCue(t) { var ev = newEvent(t); bell(ev, t, 1318.5, 0.6, 0.45); return ev; }
 
-  // Cancel scheduled sounds. onlyFuture: keep anything already ringing.
   function cancelSounds(onlyFuture) {
     if (!ctx) return;
     var tnow = ctx.currentTime, keep = [];
@@ -219,7 +249,6 @@
     });
   }
 
-  // Map an elapsed-session time (ms) to AudioContext time (s).
   function audioTimeFor(tElapsedMs) {
     var targetPerf = run.startPerf + tElapsedMs;
     if (ctx.getOutputTimestamp) {
@@ -231,7 +260,6 @@
     return ctx.currentTime + (targetPerf - now()) / 1000;
   }
 
-  // Test-only: detect actual audio onsets from the output to verify timing.
   function startOnsetDetector() {
     var data = new Float32Array(analyser.fftSize), hist = [], lastOn = -1e9;
     setInterval(function () {
@@ -250,75 +278,136 @@
 
   // ---------- session engine ----------
   var run = {
-    state: 'idle', intervalMs: 30000, totalMs: 1800000, leadIn: false,
-    startPerf: 0, pausedElapsed: 0, firedIdx: 0, schedIdx: 0, endScheduled: false,
+    state: 'idle', workMs: 60000, restMs: 30000, totalMs: 900000, leadIn: false,
+    startPerf: 0, pausedElapsed: 0, firedIdx: 0, schedIdx: 0, cues: [],
     lastTickPerf: 0, lastTickWall: 0
   };
   function elapsedMs() { return run.state === 'running' ? now() - run.startPerf : run.pausedElapsed; }
-  function totalIntervals() { return isFinite(run.totalMs) ? Math.ceil(run.totalMs / run.intervalMs - 1e-9) : Infinity; }
+
+  function cueFromIndex(i) {
+    var w = run.workMs, r = run.restMs, round = w + r;
+    var pair = Math.floor(i / 2);
+    if (i % 2 === 0) return { t: pair * round + w, kind: 'chime', phase: 'work' };
+    return { t: (pair + 1) * round, kind: 'chime', phase: 'rest' };
+  }
+  function buildCues() {
+    run.cues = [];
+    if (!isFinite(run.totalMs)) return;
+    var w = run.workMs, r = run.restMs, round = w + r, T = run.totalMs;
+    if (!(w > 0) || !(r > 0) || !(round > 0)) {
+      run.cues.push({ t: T, kind: 'end', phase: 'end' });
+      return;
+    }
+    var t = 0, guard = 0;
+    while (t + w < T && guard++ < 100000) {
+      run.cues.push({ t: t + w, kind: 'chime', phase: 'work' });
+      if (t + round >= T) break;
+      run.cues.push({ t: t + round, kind: 'chime', phase: 'rest' });
+      t += round;
+    }
+    run.cues.push({ t: T, kind: 'end', phase: 'end' });
+  }
+  function extendCues(untilMs) {
+    if (isFinite(run.totalMs)) return;
+    var guard = 0;
+    while (guard++ < 8000) {
+      var cue = cueFromIndex(run.cues.length);
+      if (cue.t > untilMs) break;
+      run.cues.push(cue);
+    }
+  }
 
   function scheduleAhead() {
     if (!ctx || run.state !== 'running') return;
-    var el = elapsedMs(), horizon = el + LOOKAHEAD_MS, I = run.intervalMs;
+    var el = elapsedMs(), horizon = el + LOOKAHEAD_MS;
+    extendCues(horizon);
     var tnow = ctx.currentTime;
     function at(tMs) {
       var a = audioTimeFor(tMs);
-      if (a < tnow - 0.25) return null;  // missed by >250 ms: skip
+      if (a < tnow - 0.25) return null;
       return Math.max(a, tnow + 0.005);
     }
-    function leadIns(tMs) {
+    function leadIns(tMs, prev) {
       if (!run.leadIn) return;
-      var prev = tMs - I;
-      if (isFinite(run.totalMs) && tMs === run.totalMs) prev = Math.floor((run.totalMs - 1) / I) * I;
       for (var b = 3; b >= 1; b--) {
         var tb = tMs - b * 1000;
         if (tb <= prev + 150 || tb < el - 50) continue;
-        var ab = at(tb); if (ab !== null) { playBeep(ab); log({ type: 'sched-beep', t: tb, audio: +ab.toFixed(3) }); }
+        var ab = at(tb);
+        if (ab !== null) { playBeep(ab); log({ type: 'sched-beep', t: tb, audio: +ab.toFixed(3) }); }
       }
     }
-    while (true) {
-      var k = run.schedIdx + 1, t = k * I;
-      if (isFinite(run.totalMs) && t >= run.totalMs - 0.5) break;
-      if (t > horizon) break;
-      run.schedIdx = k;
-      if (t < el - 250) continue;
-      leadIns(t);
-      var a = at(t);
-      if (a !== null) { playChime(a); log({ type: 'sched-chime', k: k, t: t, audio: +a.toFixed(3) }); }
+    while (run.schedIdx < run.cues.length) {
+      var cue = run.cues[run.schedIdx];
+      if (cue.t > horizon) break;
+      var idx = run.schedIdx;
+      run.schedIdx++;
+      if (cue.t < el - 250) continue;
+      var prev = idx > 0 ? run.cues[idx - 1].t : 0;
+      leadIns(cue.t, prev);
+      var a = at(cue.t);
+      if (a === null) continue;
+      if (cue.kind === 'end') {
+        playEnd(a);
+        log({ type: 'sched-end', t: cue.t, audio: +a.toFixed(3) });
+      } else {
+        playChime(a);
+        log({ type: 'sched-chime', k: idx + 1, t: cue.t, phase: cue.phase, audio: +a.toFixed(3) });
+      }
     }
-    if (isFinite(run.totalMs) && !run.endScheduled && run.totalMs <= horizon) {
-      run.endScheduled = true;
-      leadIns(run.totalMs);
-      var ae = at(run.totalMs);
-      if (ae !== null) { playEnd(ae); log({ type: 'sched-end', t: run.totalMs, audio: +ae.toFixed(3) }); }
-    }
+  }
+  function rewindSched(el) {
+    extendCues(el + LOOKAHEAD_MS);
+    run.schedIdx = 0;
+    while (run.schedIdx < run.cues.length && run.cues[run.schedIdx].t < el - 250) run.schedIdx++;
   }
   function resync() {
     if (run.state !== 'running' || !ctx) return;
     cancelSounds(true);
-    run.schedIdx = Math.floor(elapsedMs() / run.intervalMs);
-    run.endScheduled = false;
+    rewindSched(elapsedMs());
     scheduleAhead();
     log({ type: 'resync' });
   }
 
+  function phaseAt(el) {
+    var w = run.workMs, r = run.restMs, round = w + r;
+    var T = run.totalMs;
+    var capped = isFinite(T) ? Math.min(Math.max(0, el), T) : Math.max(0, el);
+    var idx = round > 0 ? Math.floor(capped / round) : 0;
+    var into = round > 0 ? capped - idx * round : 0;
+    var inWork = into < w || !(r > 0);
+    var segStart = inWork ? idx * round : idx * round + w;
+    var phaseEnd = inWork ? idx * round + w : idx * round + round;
+    if (isFinite(T) && phaseEnd > T) phaseEnd = T;
+    var n = idx + 1;
+    var M = (isFinite(T) && round > 0) ? Math.max(1, Math.round(T / round)) : Infinity;
+    if (isFinite(M) && n > M) n = M;
+    return { inWork: inWork, segStart: segStart, phaseEnd: phaseEnd, roundNum: n, rounds: M };
+  }
+
   function startSession() {
-    var I = intervalSec(), T = sessionSec();
-    if (!(I >= MIN_INTERVAL_S)) return;
+    var W = settings.work, R = settings.rest;
+    var T = settings.open ? Infinity : settings.total;
+    if (!(W >= MIN_INTERVAL_S && R >= MIN_INTERVAL_S)) return;
+    if (!settings.open && !(T >= W + R && T % (W + R) === 0)) return;
     ensureAudio();
     startKeepAlive();
-    run.intervalMs = I * 1000;
+    run.workMs = W * 1000;
+    run.restMs = R * 1000;
     run.totalMs = isFinite(T) ? T * 1000 : Infinity;
     run.leadIn = settings.leadIn;
-    run.firedIdx = 0; run.schedIdx = 0; run.endScheduled = false;
+    run.cues = [];
+    buildCues();
+    run.firedIdx = 0;
+    run.schedIdx = 0;
     run.pausedElapsed = 0;
-    run.startPerf = now() + 60;   // small offset so audio is ready
-    run.lastTickPerf = now(); run.lastTickWall = Date.now();
+    run.startPerf = now() + 60;
+    run.lastTickPerf = now();
+    run.lastTickWall = Date.now();
     run.state = 'running';
     cancelSounds(false);
-    if (ctx) { playStartCue(ctx.currentTime + 0.03); }
+    if (ctx) playStartCue(ctx.currentTime + 0.03);
     scheduleAhead();
-    log({ type: 'start', intervalMs: run.intervalMs, totalMs: isFinite(run.totalMs) ? run.totalMs : null });
+    log({ type: 'start', workMs: run.workMs, restMs: run.restMs, totalMs: isFinite(run.totalMs) ? run.totalMs : null });
     showRun();
     requestWakeLock();
     updateMediaSession();
@@ -338,8 +427,7 @@
     run.startPerf = now() - run.pausedElapsed;
     run.lastTickPerf = now(); run.lastTickWall = Date.now();
     run.state = 'running';
-    run.schedIdx = Math.floor(run.pausedElapsed / run.intervalMs);
-    run.endScheduled = false;
+    rewindSched(run.pausedElapsed);
     scheduleAhead();
     log({ type: 'resume', elapsed: Math.round(run.pausedElapsed) });
     requestWakeLock();
@@ -361,13 +449,11 @@
     log({ type: 'end', elapsed: Math.round(run.totalMs) });
     flash(true);
     releaseWakeLock();
-    // let the end chime ring out before dropping the media audio session
     setTimeout(function () { if (run.state === 'done' || run.state === 'idle') stopKeepAlive(); }, 7000);
     clearMediaSession();
     render();
   }
 
-  // ---------- tick ----------
   var rafId = 0, timerId = 0;
   function loop() {
     cancelAnimationFrame(rafId);
@@ -376,122 +462,403 @@
   }
   function tick() {
     if (run.state !== 'running') { if (timerId) { clearInterval(timerId); timerId = 0; } return; }
-    // If the device slept, performance.now() may lag wall time; trust wall time for the gap.
     var p = now(), w = Date.now();
     var gap = (w - run.lastTickWall) - (p - run.lastTickPerf);
     if (gap > 1500) { run.startPerf -= gap; log({ type: 'sleep-gap', ms: Math.round(gap) }); resync(); }
     run.lastTickPerf = p; run.lastTickWall = w;
 
     var el = elapsedMs();
-    if (isFinite(run.totalMs) && el >= run.totalMs) { finishSession(); return; }
-    var fired = Math.floor(el / run.intervalMs);
-    if (fired > run.firedIdx) {
-      var missed = fired - run.firedIdx - 1;
-      run.firedIdx = fired;
-      log({ type: 'chime', k: fired, expected: fired * run.intervalMs, elapsed: Math.round(el), missed: missed });
+    extendCues(el + 1000);
+    var newly = 0, lastT = 0, lastPhase = '';
+    while (run.firedIdx < run.cues.length) {
+      var cue = run.cues[run.firedIdx];
+      if (!cue || cue.kind === 'end' || cue.t > el) break;
+      lastT = cue.t; lastPhase = cue.phase;
+      run.firedIdx++;
+      newly++;
+    }
+    if (newly) {
+      log({ type: 'chime', k: run.firedIdx, expected: lastT, elapsed: Math.round(el), missed: newly - 1, phase: lastPhase });
       flash(false);
       if (navigator.vibrate) { try { navigator.vibrate(200); } catch (e) {} }
       updateMediaSession();
     }
     scheduleAhead();
+    if (isFinite(run.totalMs) && el >= run.totalMs) { finishSession(); return; }
     if (Math.random() < 0.02) pruneEvents();
     render();
   }
 
+  // ---------- wheel ----------
+  function rangeChoices(current) {
+    var vals = [], max = 15 * 60, s;
+    if (TEST) {
+      for (s = 1; s <= 90; s++) vals.push(s);
+      for (s = 95; s <= max; s += 5) vals.push(s);
+    } else {
+      for (s = MIN_INTERVAL_S; s <= max; s += 5) vals.push(s);
+    }
+    current = current | 0;
+    if (current >= 0 && current <= 180 * 60 && vals.indexOf(current) < 0) {
+      vals.push(current);
+      vals.sort(function (a, b) { return a - b; });
+    }
+    return vals;
+  }
+  function totalChoices() {
+    var round = Math.max(1, (settings.work | 0) + (settings.rest | 0));
+    var limit = Math.max(WHEEL_MAX, settings.total || 0, round);
+    var vals = [];
+    for (var t = round; t <= limit + 0.001 && vals.length < 2000; t += round) vals.push(Math.round(t));
+    if (!vals.length) vals.push(round);
+    var cur = Math.round(settings.total);
+    if (cur > 0 && vals.indexOf(cur) < 0) {
+      vals.push(cur);
+      vals.sort(function (a, b) { return a - b; });
+    }
+    return vals;
+  }
+
+  function sizePads(col) {
+    var h = Math.max(0, (col.clientHeight - ITEM) / 2);
+    var pads = col.querySelectorAll('.w-pad');
+    for (var i = 0; i < pads.length; i++) pads[i].style.height = h + 'px';
+  }
+  function markItem(col, el) {
+    var items = col.querySelectorAll('.w-item');
+    var idx = 0;
+    for (var i = 0; i < items.length; i++) if (items[i] === el) idx = i;
+    for (var j = 0; j < items.length; j++) {
+      var d = Math.abs(j - idx);
+      items[j].classList.toggle('sel', d === 0);
+      items[j].classList.toggle('near', d === 1);
+      items[j].setAttribute('aria-selected', d === 0 ? 'true' : 'false');
+    }
+  }
+  function nearestItem(col) {
+    var items = col.querySelectorAll('.w-item');
+    if (!items.length) return null;
+    var mid = col.scrollTop + col.clientHeight / 2;
+    var best = items[0], bestD = Infinity;
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i].offsetTop + items[i].offsetHeight / 2;
+      var d = Math.abs(c - mid);
+      if (d < bestD) { bestD = d; best = items[i]; }
+    }
+    return best;
+  }
+  function layoutColumn(col, values, selectedSec) {
+    var sig = values.join(',');
+    if (col._sig !== sig) {
+      col._sig = sig;
+      var html = '<div class="w-pad"></div>';
+      for (var i = 0; i < values.length; i++) {
+        html += '<div class="w-item" role="option" data-sec="' + values[i] + '">' + fmtWheel(values[i]) + '</div>';
+      }
+      html += '<div class="w-pad"></div>';
+      col._prog = (col._prog || 0) + 1;
+      col.innerHTML = html;
+      setTimeout(function () { col._prog = Math.max(0, col._prog - 1); }, 60);
+    }
+    sizePads(col);
+    var el = col.querySelector('.w-item[data-sec="' + (selectedSec | 0) + '"]') || col.querySelector('.w-item');
+    if (!el || !col.clientHeight) return;
+    var top = el.offsetTop - (col.clientHeight - el.offsetHeight) / 2;
+    if (Math.abs(col.scrollTop - top) > 1) {
+      col._prog = (col._prog || 0) + 1;
+      col.scrollTop = top;
+      setTimeout(function () { col._prog = Math.max(0, col._prog - 1); }, 60);
+    }
+    markItem(col, el);
+  }
+
+  function momentum(col, v) {
+    var id = (col._mom = (col._mom || 0) + 1);
+    var prev = now();
+    function frame(t) {
+      if (col._mom !== id) return;
+      var dt = Math.min(34, t - prev);
+      prev = t;
+      v *= Math.pow(0.94, dt / 16);
+      if (Math.abs(v) < 0.03) { settleColumn(col); return; }
+      var max = Math.max(0, col.scrollHeight - col.clientHeight);
+      var next = col.scrollTop + v * dt;
+      if (next <= 0 || next >= max) {
+        col.scrollTop = Math.max(0, Math.min(max, next));
+        settleColumn(col);
+        return;
+      }
+      col.scrollTop = next;
+      col._raf = requestAnimationFrame(frame);
+    }
+    col._raf = requestAnimationFrame(frame);
+  }
+  function settleColumn(col) {
+    var el = nearestItem(col);
+    if (!el) return;
+    var top = el.offsetTop - (col.clientHeight - el.offsetHeight) / 2;
+    var reduce = false;
+    try { reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduce = false; }
+    col._prog = (col._prog || 0) + 1;
+    if (Math.abs(col.scrollTop - top) > 1) col.scrollTo({ top: top, behavior: reduce ? 'auto' : 'smooth' });
+    setTimeout(function () { col._prog = Math.max(0, (col._prog || 1) - 1); }, 260);
+    commitColumn(col, Number(el.dataset.sec));
+  }
+  function commitColumn(col, sec) {
+    if (col.dataset.col === 'work') setWork(sec, { wheel: true });
+    else if (col.dataset.col === 'rest') setRest(sec);
+    else setTotal(sec, { touched: true });
+  }
+  function stepColumn(col, dir) {
+    var items = col.querySelectorAll('.w-item');
+    var el = nearestItem(col);
+    var idx = 0;
+    for (var i = 0; i < items.length; i++) if (items[i] === el) idx = i;
+    var n = Math.max(0, Math.min(items.length - 1, idx + dir));
+    commitColumn(col, Number(items[n].dataset.sec));
+  }
+  function bindWheel(col) {
+    var drag = null;
+    col._prog = 0;
+    col.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      col._mom = (col._mom || 0) + 1;
+      if (col._raf) cancelAnimationFrame(col._raf);
+      drag = { id: e.pointerId, y: e.clientY, scroll: col.scrollTop, lastY: e.clientY, lastT: now(), vel: 0, moved: false };
+      if (col === ui.totalCol && settings.open) {
+        ui.totalOpen.hidden = true;
+        col.classList.remove('is-open');
+      }
+      try { col.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    });
+    col.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.id) return;
+      var t = now();
+      var dy = e.clientY - drag.lastY;
+      var dt = Math.max(8, t - drag.lastT);
+      drag.vel = dy / dt;
+      drag.lastY = e.clientY;
+      drag.lastT = t;
+      if (Math.abs(e.clientY - drag.y) > 6) drag.moved = true;
+      col.scrollTop = drag.scroll - (e.clientY - drag.y);
+      if (drag.moved && e.cancelable) e.preventDefault();
+    });
+    function endDrag(e) {
+      if (!drag || (e && e.pointerId !== drag.id)) return;
+      var moved = drag.moved;
+      var vel = drag.vel;
+      drag = null;
+      if (!moved) return;
+      col._suppressClick = true;
+      momentum(col, -vel);
+    }
+    col.addEventListener('pointerup', endDrag);
+    col.addEventListener('pointercancel', endDrag);
+    col.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      col._mom = (col._mom || 0) + 1;
+      col.scrollTop += e.deltaY;
+      clearTimeout(col._wheelT);
+      col._wheelT = setTimeout(function () { settleColumn(col); }, 140);
+    }, { passive: false });
+    col.addEventListener('touchmove', function (e) { if (e.cancelable) e.preventDefault(); }, { passive: false });
+    col.addEventListener('scroll', function () {
+      if (col._prog) return;
+      var el = nearestItem(col);
+      if (el) markItem(col, el);
+    }, { passive: true });
+    col.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      stepColumn(col, e.key === 'ArrowDown' ? 1 : -1);
+    });
+    col.addEventListener('click', function (e) {
+      if (col._suppressClick) { col._suppressClick = false; return; }
+      var item = e.target.closest ? e.target.closest('.w-item') : null;
+      if (!item || !col.contains(item)) return;
+      commitColumn(col, Number(item.dataset.sec));
+    });
+  }
+
+  // ---------- settings mutations ----------
+  function setWork(sec, opts) {
+    opts = opts || {};
+    sec = Math.max(0, sec | 0);
+    var changed = sec !== settings.work;
+    settings.work = sec;
+    settings.ciMin = Math.floor(sec / 60);
+    settings.ciSec = sec % 60;
+    if (opts.forceCustom != null) settings.forceCustom = !!opts.forceCustom;
+    else if (opts.wheel) settings.forceCustom = workPresets().indexOf(sec) < 0;
+    if (changed) retargetTotal();
+    save();
+    renderSetup();
+  }
+  function setRest(sec) {
+    sec = Math.max(0, sec | 0);
+    var changed = sec !== settings.rest;
+    settings.rest = sec;
+    if (changed) retargetTotal();
+    save();
+    renderSetup();
+  }
+  function setTotal(sec, opts) {
+    opts = opts || {};
+    var round = Math.max(1, (settings.work | 0) + (settings.rest | 0));
+    var next = nearestRounds(round, sec | 0);
+    settings.open = false;
+    if (opts.touched !== false) settings.totalTouched = true;
+    settings.total = next;
+    settings.csMin = clampInt(Math.round(next / 60), 1, 600, 15);
+    if (opts.forceSessionCustom != null) settings.forceSessionCustom = !!opts.forceSessionCustom;
+    else settings.forceSessionCustom = sessionPresets().indexOf(next) < 0;
+    save();
+    renderSetup();
+  }
+
   // ---------- UI ----------
   var ui = {};
+  var lastText = {};
+  function setText(el, key, txt) { if (lastText[key] !== txt) { el.textContent = txt; lastText[key] = txt; } }
+  function setWidth(el, key, pct) { var v = pct.toFixed(1) + '%'; if (lastText[key] !== v) { el.style.width = v; lastText[key] = v; } }
+
   function buildButtons(container, items, key, extra) {
     container.innerHTML = '';
     items.concat(extra).forEach(function (it) {
       var b = document.createElement('button');
-      b.type = 'button'; b.className = 'btn opt' + (it.cls ? ' ' + it.cls : '');
-      b.dataset.v = it.v; b.innerHTML = it.label;
+      b.type = 'button';
+      b.className = 'btn opt' + (it.cls ? ' ' + it.cls : '');
+      b.dataset.v = it.v;
+      b.innerHTML = it.label;
       b.addEventListener('click', function () {
-        settings[key] = it.v; save(); renderSetup();
-        if (it.v === 'custom') {
-          var inp = key === 'interval' ? ui.ciMin : ui.csMin;
-          setTimeout(function () { inp.focus(); inp.select && inp.select(); }, 30);
+        if (key === 'interval') {
+          if (it.v === 'custom') {
+            setWork(settings.ciMin * 60 + settings.ciSec, { forceCustom: true });
+            setTimeout(function () { ui.ciMin.focus(); if (ui.ciMin.select) ui.ciMin.select(); }, 30);
+          } else {
+            setWork(Number(it.v), { forceCustom: false });
+          }
+        } else if (it.v === 'open') {
+          settings.open = true;
+          settings.forceSessionCustom = false;
+          save();
+          renderSetup();
+        } else if (it.v === 'custom') {
+          setTotal(settings.csMin * 60, { touched: true, forceSessionCustom: true });
+          setTimeout(function () { ui.csMin.focus(); if (ui.csMin.select) ui.csMin.select(); }, 30);
+        } else {
+          setTotal(Number(it.v), { touched: true, forceSessionCustom: false });
         }
       });
       container.appendChild(b);
     });
   }
+
+  function renderWheels() {
+    if (ui.setup.hidden) return;
+    layoutColumn(ui.workCol, rangeChoices(settings.work), settings.work);
+    layoutColumn(ui.restCol, rangeChoices(settings.rest), settings.rest);
+    layoutColumn(ui.totalCol, totalChoices(), settings.total);
+    ui.totalCol.classList.toggle('is-open', !!settings.open);
+    ui.totalOpen.hidden = !settings.open;
+  }
+
   function renderSetup() {
-    [].forEach.call(ui.intBtns.children, function (b) { b.setAttribute('aria-pressed', String(b.dataset.v === settings.interval)); });
-    [].forEach.call(ui.sesBtns.children, function (b) { b.setAttribute('aria-pressed', String(b.dataset.v === settings.session)); });
-    ui.customInt.hidden = settings.interval !== 'custom';
-    ui.customSes.hidden = settings.session !== 'custom';
+    var workCustom = settings.forceCustom || workPresets().indexOf(settings.work) < 0;
+    var sessionCustom = !settings.open && (settings.forceSessionCustom || sessionPresets().indexOf(settings.total) < 0);
+    [].forEach.call(ui.intBtns.children, function (b) {
+      var pressed = b.dataset.v === 'custom' ? workCustom : (!settings.forceCustom && settings.work === Number(b.dataset.v));
+      b.setAttribute('aria-pressed', String(pressed));
+    });
+    [].forEach.call(ui.sesBtns.children, function (b) {
+      var pressed = false;
+      if (b.dataset.v === 'open') pressed = !!settings.open;
+      else if (b.dataset.v === 'custom') pressed = sessionCustom;
+      else pressed = !settings.open && !settings.forceSessionCustom && settings.total === Number(b.dataset.v);
+      b.setAttribute('aria-pressed', String(pressed));
+    });
+    ui.customInt.hidden = !workCustom;
+    ui.customSes.hidden = !sessionCustom;
     if (document.activeElement !== ui.ciMin) ui.ciMin.value = settings.ciMin;
     if (document.activeElement !== ui.ciSec) ui.ciSec.value = settings.ciSec;
     if (document.activeElement !== ui.csMin) ui.csMin.value = settings.csMin;
-    ui.leadIn.checked = settings.leadIn; ui.override.checked = settings.override;
+    ui.leadIn.checked = settings.leadIn;
+    ui.override.checked = settings.override;
     ui.volume.value = settings.volume;
 
-    var I = intervalSec(), T = sessionSec(), msg, ok = I >= MIN_INTERVAL_S;
-    if (!ok) msg = 'Interval must be at least ' + MIN_INTERVAL_S + ' seconds.';
-    else if (!isFinite(T)) msg = 'Chime every <b>' + fmtDur(I) + '</b> until you press Stop.';
-    else if (I >= T) msg = 'Interval is as long as the session, so you get one end chime at <b>' + fmt(T) + '</b>.';
+    var w = settings.work, r = settings.rest, t = settings.total, round = w + r;
+    var ok = w >= MIN_INTERVAL_S && r >= MIN_INTERVAL_S && (settings.open || (round > 0 && t >= round && t % round === 0));
+    var msg;
+    if (w < MIN_INTERVAL_S || r < MIN_INTERVAL_S) msg = 'Each interval must be at least ' + MIN_INTERVAL_S + ' seconds.';
+    else if (settings.open) msg = fmtWheel(w) + ' / ' + fmtWheel(r) + ' until you stop.';
     else {
-      var M = Math.ceil(T / I - 1e-9), rem = T - (M - 1) * I;
-      msg = 'Chime every <b>' + fmtDur(I) + '</b>, <b>' + M + '</b> intervals, triple chime at <b>' + fmt(T) + '</b>.';
-      if (rem !== I) msg += ' The last interval is ' + fmtDur(rem) + '.';
+      var rounds = round > 0 ? Math.max(1, Math.round(t / round)) : 0;
+      msg = fmtWheel(w) + ' / ' + fmtWheel(r) + ' · ' + rounds + ' rounds · ' + fmtWheel(t);
     }
-    ui.summary.innerHTML = msg;
+    ui.summary.textContent = msg;
     ui.summary.classList.toggle('err', !ok);
     ui.start.disabled = !ok;
+    renderWheels();
   }
 
   function showSetup() {
     cancelAnimationFrame(rafId);
-    ui.run.hidden = true; ui.setup.hidden = false;
+    ui.run.hidden = true;
+    ui.setup.hidden = false;
     document.title = 'Interval Chime';
     renderSetup();
+    window.scrollTo(0, 0);
+    requestAnimationFrame(renderWheels);
   }
   function showRun() {
-    ui.setup.hidden = true; ui.run.hidden = false;
-    ui.stop.classList.remove('confirm'); ui.stop.textContent = 'Stop';
+    ui.setup.hidden = true;
+    ui.run.hidden = false;
+    ui.stop.classList.remove('confirm');
+    ui.stop.textContent = 'Stop';
+    lastText = {};
     window.scrollTo(0, 0);
     render();
   }
 
-  var lastText = {};
-  function setText(el, key, txt) { if (lastText[key] !== txt) { el.textContent = txt; lastText[key] = txt; } }
-  function setWidth(el, key, pct) { var v = pct.toFixed(1) + '%'; if (lastText[key] !== v) { el.style.width = v; lastText[key] = v; } }
-
   function render() {
     if (ui.run.hidden) return;
-    var I = run.intervalMs, T = run.totalMs, el = Math.max(0, elapsedMs()), M = totalIntervals();
+    var el = Math.max(0, elapsedMs());
     var done = run.state === 'done';
+    var info = phaseAt(done ? run.totalMs : el);
     ui.run.classList.toggle('paused', run.state === 'paused');
     ui.run.classList.toggle('done', done);
-    ui.controls.hidden = done; ui.doneControls.hidden = !done;
-    setText(ui.every, 'every', 'every ' + fmt(I / 1000) + (isFinite(T) ? ' · ' + fmt(T / 1000) + ' total' : ' · open-ended'));
+    ui.run.classList.toggle('phase-work', !done && info.inWork);
+    ui.run.classList.toggle('phase-rest', !done && !info.inWork);
+    ui.controls.hidden = done;
+    ui.doneControls.hidden = !done;
+    var pair = fmt(run.workMs / 1000) + ' · ' + fmt(run.restMs / 1000);
+    setText(ui.every, 'every', pair);
     if (done) {
+      var roundsDone = isFinite(info.rounds) ? info.rounds : info.roundNum;
       setText(ui.interval, 'int', 'Session complete');
-      setText(ui.label, 'lbl', M + ' interval' + (M === 1 ? '' : 's'));
+      setText(ui.label, 'lbl', roundsDone + ' round' + (roundsDone === 1 ? '' : 's'));
       setText(ui.count, 'cnt', 'Done');
-      setText(ui.elapsed, 'el', fmt(T / 1000));
+      setText(ui.elapsed, 'el', fmt(run.totalMs / 1000));
       setText(ui.remaining, 'rem', '0:00');
-      setWidth(ui.ibar, 'ib', 100); setWidth(ui.tbar, 'tb', 100);
+      setWidth(ui.ibar, 'ib', 100);
+      setWidth(ui.tbar, 'tb', 100);
       document.title = 'Done · Interval Chime';
       return;
     }
-    var n = Math.floor(el / I) + 1;
-    if (isFinite(M)) n = Math.min(n, M);
-    var nextT = n * I; if (isFinite(T)) nextT = Math.min(nextT, T);
-    var toNext = Math.max(0, nextT - el);
+    var roundTxt = isFinite(info.rounds) ? ('Round ' + info.roundNum + ' of ' + info.rounds) : ('Round ' + info.roundNum);
+    var toNext = Math.max(0, info.phaseEnd - el);
     var cdTxt = fmt(Math.ceil(toNext / 1000 - 1e-6));
-    setText(ui.interval, 'int', isFinite(M) ? 'Interval ' + n + ' of ' + M : 'Interval ' + n);
-    setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : (isFinite(T) && nextT === T ? 'Session ends in' : 'Next chime in'));
+    setText(ui.interval, 'int', roundTxt);
+    setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : (info.inWork ? 'Work' : 'Rest'));
     setText(ui.count, 'cnt', cdTxt);
     setText(ui.elapsed, 'el', fmt(el / 1000));
-    setText(ui.remaining, 'rem', isFinite(T) ? fmt(Math.ceil((T - el) / 1000 - 1e-6)) : '∞');
-    var segStart = (n - 1) * I, segLen = nextT - segStart;
-    setWidth(ui.ibar, 'ib', segLen > 0 ? Math.min(100, (el - segStart) / segLen * 100) : 0);
-    ui.tbarWrap.hidden = !isFinite(T);
-    if (isFinite(T)) setWidth(ui.tbar, 'tb', Math.min(100, el / T * 100));
+    setText(ui.remaining, 'rem', isFinite(run.totalMs) ? fmt(Math.ceil((run.totalMs - el) / 1000 - 1e-6)) : '∞');
+    var segLen = info.phaseEnd - info.segStart;
+    setWidth(ui.ibar, 'ib', segLen > 0 ? Math.min(100, (el - info.segStart) / segLen * 100) : 0);
+    ui.tbarWrap.hidden = !isFinite(run.totalMs);
+    if (isFinite(run.totalMs)) setWidth(ui.tbar, 'tb', Math.min(100, el / run.totalMs * 100));
     setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
-    document.title = cdTxt + ' · Interval Chime';
+    document.title = cdTxt + ' · ' + (info.inWork ? 'Work' : 'Rest');
   }
 
   var flashTimer = 0;
@@ -502,7 +869,6 @@
     flashTimer = setTimeout(function () { ui.flash.classList.remove('on'); }, 120);
   }
 
-  // ---------- wake lock ----------
   var wakeLock = null;
   function setWake(txt) { ui.wake.textContent = 'Screen: ' + txt; }
   function requestWakeLock() {
@@ -536,14 +902,13 @@
     ui.audioBanner.hidden = !(ctx && ctx.state !== 'running' && (run.state === 'running' || run.state === 'paused'));
   }
 
-  // ---------- media session (lock screen / Control Center) ----------
   function updateMediaSession() {
     if (!('mediaSession' in navigator) || !settings.override) return;
     try {
-      var M = totalIntervals(), n = Math.min(run.firedIdx + 1, M);
+      var info = phaseAt(elapsedMs());
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'Interval Chime',
-        artist: 'Every ' + fmtDur(run.intervalMs / 1000) + ' · interval ' + n + (isFinite(M) ? ' of ' + M : ''),
+        title: info.inWork ? 'Work' : 'Rest',
+        artist: 'Round ' + info.roundNum + (isFinite(info.rounds) ? ' of ' + info.rounds : '') + ' · ' + fmt(run.workMs / 1000) + ' / ' + fmt(run.restMs / 1000),
         artwork: [{ src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }]
       });
       navigator.mediaSession.playbackState = run.state === 'running' ? 'playing' : 'paused';
@@ -556,9 +921,10 @@
     try { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } catch (e) {}
   }
 
-  // ---------- init ----------
   function init() {
     ['setup', 'run', 'summary', 'flash'].forEach(function (id) { ui[id] = $(id); });
+    ui.workCol = $('col-work'); ui.restCol = $('col-rest'); ui.totalCol = $('col-total');
+    ui.totalOpen = $('total-open');
     ui.intBtns = $('interval-buttons'); ui.sesBtns = $('session-buttons');
     ui.customInt = $('custom-interval'); ui.customSes = $('custom-session');
     ui.ciMin = $('ci-min'); ui.ciSec = $('ci-sec'); ui.csMin = $('cs-min');
@@ -571,21 +937,29 @@
     ui.doneControls = $('done-controls'); ui.wake = $('r-wake'); ui.audioBanner = $('audio-banner');
     if (TEST) $('test-badge').hidden = false;
 
+    bindWheel(ui.workCol); bindWheel(ui.restCol); bindWheel(ui.totalCol);
     buildButtons(ui.intBtns, INTERVALS, 'interval', [{ v: 'custom', label: 'Custom', cls: 'wide' }]);
-    var sesExtra = [{ v: 'custom', label: 'Custom', cls: 'wide-half' }, { v: 'open', label: 'Until I stop', cls: 'wide-two' }];
-    buildButtons(ui.sesBtns, SESSIONS, 'session', sesExtra);
+    buildButtons(ui.sesBtns, SESSIONS, 'session', [{ v: 'custom', label: 'Custom', cls: 'wide-half' }, { v: 'open', label: 'Until I stop', cls: 'wide-two' }]);
 
-    function onNum() {
-      settings.ciMin = clampInt(ui.ciMin.value, 0, 180, 0);
-      settings.ciSec = clampInt(ui.ciSec.value, 0, 59, 0);
-      settings.csMin = clampInt(ui.csMin.value, 1, 600, 1);
-      save(); renderSetup();
+    function onWorkInputs() {
+      if (ui.ciMin.value !== '') settings.ciMin = clampInt(ui.ciMin.value, 0, 180, settings.ciMin);
+      if (ui.ciSec.value !== '') settings.ciSec = clampInt(ui.ciSec.value, 0, 59, settings.ciSec);
+      setWork(settings.ciMin * 60 + settings.ciSec, { forceCustom: true });
     }
-    [ui.ciMin, ui.ciSec, ui.csMin].forEach(function (inp) {
-      inp.addEventListener('input', onNum);
-      inp.addEventListener('blur', function () { onNum(); inp.value = inp === ui.ciMin ? settings.ciMin : inp === ui.ciSec ? settings.ciSec : settings.csMin; });
+    function onSessionInput() {
+      if (ui.csMin.value === '') return;
+      settings.csMin = clampInt(ui.csMin.value, 1, 600, settings.csMin);
+      setTotal(settings.csMin * 60, { touched: true, forceSessionCustom: true });
+    }
+    [ui.ciMin, ui.ciSec].forEach(function (inp) {
+      inp.addEventListener('input', onWorkInputs);
+      inp.addEventListener('blur', function () { onWorkInputs(); inp.value = inp === ui.ciMin ? settings.ciMin : settings.ciSec; });
       inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') inp.blur(); });
     });
+    ui.csMin.addEventListener('input', onSessionInput);
+    ui.csMin.addEventListener('blur', function () { onSessionInput(); ui.csMin.value = settings.csMin; });
+    ui.csMin.addEventListener('keydown', function (e) { if (e.key === 'Enter') ui.csMin.blur(); });
+
     ui.leadIn.addEventListener('change', function () { settings.leadIn = ui.leadIn.checked; save(); });
     ui.override.addEventListener('change', function () { settings.override = ui.override.checked; save(); });
     ui.volume.addEventListener('input', function () {
@@ -611,7 +985,9 @@
     $('btn-back').addEventListener('click', function () { run.state = 'done'; stopSession(); });
     $('btn-audio-fix').addEventListener('click', function () { ensureAudio(); startKeepAlive(); setTimeout(checkAudioBanner, 300); });
 
+    window.addEventListener('resize', function () { if (!ui.setup.hidden) renderWheels(); });
     renderSetup();
+    requestAnimationFrame(renderWheels);
 
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.register('sw.js').then(function (reg) {
@@ -620,13 +996,16 @@
     }
   }
 
-  // Test hook (harmless in production; no data leaves the device).
   window.__chime = {
     log: testLog,
     state: function () {
-      return { state: run.state, elapsed: Math.round(elapsedMs()), firedIdx: run.firedIdx, schedIdx: run.schedIdx,
-        intervalMs: run.intervalMs, totalMs: isFinite(run.totalMs) ? run.totalMs : null,
-        ctxState: ctx && ctx.state, ctxTime: ctx && ctx.currentTime, pendingEvents: events.length, wakeLock: !!wakeLock };
+      var info = phaseAt(elapsedMs());
+      return {
+        state: run.state, elapsed: Math.round(elapsedMs()), firedIdx: run.firedIdx, schedIdx: run.schedIdx,
+        workMs: run.workMs, restMs: run.restMs, totalMs: isFinite(run.totalMs) ? run.totalMs : null,
+        phase: run.state === 'done' ? 'done' : (info.inWork ? 'work' : 'rest'),
+        ctxState: ctx && ctx.state, ctxTime: ctx && ctx.currentTime, pendingEvents: events.length, wakeLock: !!wakeLock
+      };
     },
     settings: function () { return JSON.parse(JSON.stringify(settings)); }
   };
