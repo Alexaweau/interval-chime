@@ -322,6 +322,142 @@ with sync_playwright() as p:
     check('lead-in toggled back off', page.evaluate('window.__chime.settings().leadIn') is False)
     check('valid settings re-enable start', page.is_enabled('#btn-start'))
 
+    # ---------- 6b. pasted workout ----------
+    # 2 steady steps + 6x(work, rest) + 4x(20s work, 10s rest) + cool-down = 23 steps, 30:00.
+    EXAMPLE = "\n".join([
+        "1. **Rope, 3 min:** Keep it light. Stop if the Achilles feels sharp or worse.",
+        "2. **Rings, 3 min:** Do the reverse-grip hang with a tennis ball in each hand.",
+        "3. **Bag, 6 rounds of 2:00 on, 1:00 off (18 min):** Use jab-cross-hook. In rounds 5 and 6, push the pace.",
+        "4. **Finisher, 2 min:** Fast straight punches. Rest 10 seconds after each 20 seconds.",
+        "5. **Cool-down, 4 min:** Walk, then stretch your calves and hip flexors. Do not skip the cool-down.",
+    ])
+    parsed = page.evaluate("(t) => window.__chime.parseWorkout(t)", EXAMPLE)
+    steps = parsed["steps"]
+    expect_names, expect_secs, expect_kinds = [], [], []
+    expect_names += ["Rope", "Rings"]
+    expect_secs += [180, 180]
+    expect_kinds += ["work", "work"]
+    for n in range(1, 7):
+        expect_names += ["Round %d of 6, work" % n, "Rest"]
+        expect_secs += [120, 60]
+        expect_kinds += ["work", "rest"]
+    for _ in range(4):
+        expect_names += ["Finisher", "Rest"]
+        expect_secs += [20, 10]
+        expect_kinds += ["work", "rest"]
+    expect_names += ["Cool-down"]
+    expect_secs += [240]
+    expect_kinds += ["work"]
+    check("example parses with no leftover lines", parsed["ok"] is True and parsed["errors"] == [], parsed["errors"])
+    check("example expands to 23 steps", len(steps) == 23 and [s["name"] for s in steps] == expect_names, [s["name"] for s in steps])
+    check("example totals 30:00",
+          parsed["totalSeconds"] == 1800 and sum(s["seconds"] for s in steps) == 1800 and [s["seconds"] for s in steps] == expect_secs,
+          parsed["totalSeconds"])
+    check("example step kinds", [s["kind"] for s in steps] == expect_kinds, [s["kind"] for s in steps])
+    check("round 3 is spoken with its cue, rest is just Rest",
+          steps[6]["name"] == "Round 3 of 6, work" and steps[6]["speak"].startswith("Bag. Round 3 of 6, work.") and steps[7]["speak"] == "Rest" and steps[7]["cue"] == "",
+          (steps[6]["speak"], steps[7]["speak"]))
+    check("finisher rest pattern expands inside the 2:00",
+          steps[14]["seconds"] == 20 and steps[15]["seconds"] == 10 and steps[14]["cue"] == "Fast straight punches." and "after each" not in steps[14]["speak"] and steps[14]["speak"] == "Finisher. Fast straight punches.",
+          (steps[14]["cue"], steps[14]["speak"], steps[15]["speak"]))
+    check("cool-down keeps its cue", steps[22]["cue"].startswith("Walk, then stretch") and steps[22]["seconds"] == 240, steps[22]["cue"])
+    variant = "\n".join([
+        "Rope - 3 min",
+        "**Swing** 90 seconds: easy",
+        "3) Bag, 4 rounds of 1:00 on / 0:30 off",
+        "Finisher 2:00: Fast. Rest 10s after each 20 seconds",
+        "Hang (3 min): easy",
+        "just stretch",
+    ])
+    varied = page.evaluate("(t) => window.__chime.parseWorkout(t)", variant)
+    check("unparsed line is kept and not dropped",
+          varied["ok"] is False and len(varied["errors"]) == 1 and "just stretch" in varied["errors"][0]["text"] and len(varied["steps"]) == 19,
+          varied["errors"])
+    check("forgiving durations: 3 min, 90 seconds, 2:00, 10s, 20 seconds",
+          varied["steps"][0]["seconds"] == 180 and varied["steps"][1]["seconds"] == 90 and varied["steps"][10]["seconds"] == 20 and varied["steps"][11]["seconds"] == 10 and varied["steps"][-1]["name"] == "Hang",
+          [(s["name"], s["seconds"]) for s in varied["steps"]])
+
+    page.fill("#workout-text", EXAMPLE)
+    page.wait_for_timeout(60)
+    preview = page.inner_text("#workout-preview")
+    check("preview shows the parsed plan and 30:00",
+          "Rope" in preview and "Round 1 of 6, work" in preview and "Rest" in preview and "Finisher" in preview and "Cool-down" in preview and "23 steps" in preview and "30:00" in preview,
+          preview[:500])
+    check("start workout enabled for a clean plan", page.is_enabled("#btn-start-workout"))
+    page.evaluate("document.getElementById('workout-preview').scrollIntoView()")
+    page.wait_for_timeout(80)
+    page.screenshot(path=os.path.join(SCREENS, "workout-preview.png"), full_page=False)
+
+    page.evaluate("window.scrollTo(0, 0)")
+    clear_log(page)
+    page.click("#btn-start")
+    page.wait_for_timeout(250)
+    st = page.evaluate("window.__chime.state()")
+    check("main Start still runs the interval timer", st["mode"] == "intervals" and st["state"] == "running" and st["stepName"] is None, st)
+    stop(page)
+    page.wait_for_timeout(80)
+
+    page.fill("#workout-text", "1. **Rope, 3 min:** Easy.\njust stretch\n")
+    page.wait_for_timeout(40)
+    bad_preview = page.inner_text("#workout-preview")
+    check("preview shows the line that needs a fix", "just stretch" in bad_preview and "No duration" in bad_preview and "Rope" in bad_preview, bad_preview[:400])
+    check("start workout disabled until the line is fixed", page.is_disabled("#btn-start-workout"))
+
+    page.fill("#workout-text", "1. **Rope, 3 min:** Easy pace.")
+    page.wait_for_timeout(40)
+    clear_log(page)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(200)
+    cues = page.evaluate("window.__chime.workoutCues()")
+    cue_pairs = [(c["t"], c["kind"]) for c in cues]
+    check("3 min step chimes each minute and warns at 10 seconds",
+          cue_pairs == [(0, "step"), (60000, "minute"), (120000, "minute"), (170000, "warn"), (180000, "end")],
+          cue_pairs)
+    sched = sorted(set(e["t"] for e in logs(page, ["sched-chime"])))
+    check("minute chimes are scheduled on the audio clock", sched == [60000, 120000], sched)
+    spoken = [e["text"] for e in logs(page, ["speak"])]
+    check("start speaks the step name and cue", any("Rope" in t and "Easy pace" in t for t in spoken), spoken)
+    wake = page.inner_text("#r-wake")
+    check("workout asks to keep the screen awake", wake.startswith("Screen:") and "…" not in wake, wake)
+    check("workout screen shows the step", page.inner_text("#r-interval") == "Rope" and page.is_visible("#btn-skip"))
+    page.screenshot(path=os.path.join(SCREENS, "workout-running.png"))
+    stop(page)
+    page.wait_for_timeout(80)
+
+    page.fill("#workout-text", "1. **Alpha, 8 sec:** First move.\n2. **Beta, 8 sec:** Second move.")
+    page.wait_for_timeout(40)
+    clear_log(page)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(350)
+    st = page.evaluate("window.__chime.state()")
+    check("short workout is on Alpha", st["state"] == "running" and st["mode"] == "workout" and st["stepName"] == "Alpha" and page.inner_text("#r-interval") == "Alpha", st)
+    check("pause and skip are available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-skip"))
+    page.click("#btn-pause")
+    e1 = page.evaluate("window.__chime.state()")
+    page.wait_for_timeout(700)
+    e2 = page.evaluate("window.__chime.state()")
+    check("workout pause freezes the clock", e1["state"] == "paused" and page.inner_text("#btn-pause") == "Resume" and abs(e1["elapsed"] - e2["elapsed"]) <= 1, (e1["elapsed"], e2["elapsed"]))
+    page.click("#btn-pause")
+    page.click("#btn-skip")
+    page.wait_for_timeout(200)
+    st = page.evaluate("window.__chime.state()")
+    skipped_speech = [e["text"] for e in logs(page, ["speak"])]
+    check("skip advances to Beta and speaks it", st["stepName"] == "Beta" and page.inner_text("#r-interval") == "Beta" and any(t.startswith("Beta") for t in skipped_speech), (st["stepName"], skipped_speech))
+    stop(page)
+    check("stop leaves the workout", page.is_visible("#setup") and page.evaluate("window.__chime.state().state") == "idle")
+
+    page.fill("#workout-text", "1. **Beep, 2 sec:** Go.")
+    page.wait_for_timeout(40)
+    clear_log(page)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(3200)
+    st = page.evaluate("window.__chime.state()")
+    done_speech = [e["text"] for e in logs(page, ["speak"])]
+    check("short workout finishes and says Done",
+          st["state"] == "done" and page.inner_text("#r-count") == "Done" and "Done" in done_speech and any(e["type"] == "end" for e in logs(page)),
+          (st["state"], done_speech))
+    page.click("#btn-back")
+
     # ---------- 7. offline ----------
     ctx.set_offline(True)
     page.reload(wait_until='load')
