@@ -33,6 +33,8 @@ def pick(page, col, sec):
     return ok is True
 
 def drag_column(page, sel, dy):
+    page.locator(sel).scroll_into_view_if_needed()
+    page.wait_for_timeout(40)
     box = page.locator(sel).bounding_box()
     x = box['x'] + box['width'] / 2
     y = box['y'] + box['height'] / 2
@@ -87,6 +89,8 @@ with sync_playwright() as p:
       const below = document.getElementById('below').getBoundingClientRect();
       const wheel = document.getElementById('wheel').getBoundingClientRect();
       const start = document.getElementById('btn-start').getBoundingClientRect();
+      const paste = document.getElementById('workout-text').getBoundingClientRect();
+      const go = document.getElementById('btn-start-workout').getBoundingClientRect();
       const text = document.querySelector('.hero').innerText;
       const totals = [...document.querySelectorAll('#col-total .w-item')].map(el => +el.dataset.sec);
       const round = 90;
@@ -95,6 +99,9 @@ with sync_playwright() as p:
         belowTop: below.top,
         wheelTop: wheel.top, wheelH: wheel.height, wheelW: wheel.width,
         startTop: start.top, startH: start.height, startW: start.width,
+        pasteTop: paste.top, pasteH: paste.height, pasteW: paste.width,
+        goTop: go.top, goH: go.height, goW: go.width, goBottom: go.bottom,
+        goText: document.getElementById('btn-start-workout').textContent,
         gap: start.top - wheel.bottom,
         cols: document.querySelectorAll('#wheel .col').length,
         sel: {
@@ -109,7 +116,13 @@ with sync_playwright() as p:
     }""")
     check('wheel shows 1:00 / 0:30 / 15:00', hero['sel'] == {'work': '1:00', 'rest': '0:30', 'total': '15:00'}, hero['sel'])
     check('one control with three columns', hero['cols'] == 3, hero['cols'])
-    check('picker at the top', hero['wheelTop'] < 80 and hero['wheelTop'] >= 0, hero['wheelTop'])
+    check('paste box is the first thing',
+          0 <= hero['pasteTop'] < 80 and hero['pasteH'] >= 120 and hero['pasteW'] >= 300 and hero['pasteTop'] < hero['wheelTop'],
+          (hero['pasteTop'], hero['pasteH'], hero['pasteW']))
+    check('workout Start is a large button on the first screen',
+          hero['goText'] == 'Start' and hero['goH'] >= 100 and hero['goW'] >= 300 and hero['goTop'] > hero['pasteTop'] and hero['goBottom'] <= hero['vh'] + 1,
+          (hero['goText'], hero['goTop'], hero['goH'], hero['goBottom'], hero['vh']))
+    check('interval timer starts below the paste screen', hero['wheelTop'] >= hero['vh'] - 1, (hero['wheelTop'], hero['vh']))
     check('start directly below the picker', 0 <= hero['gap'] <= 40, hero['gap'])
     check('start is a large thumb target', hero['startH'] >= 100 and hero['startW'] >= 300, (hero['startH'], hero['startW']))
     check('settings are below the fold', hero['belowTop'] >= hero['vh'] - 1 and hero['scroll'] == 0, (hero['belowTop'], hero['vh']))
@@ -354,9 +367,9 @@ with sync_playwright() as p:
           parsed["totalSeconds"] == 1800 and sum(s["seconds"] for s in steps) == 1800 and [s["seconds"] for s in steps] == expect_secs,
           parsed["totalSeconds"])
     check("example step kinds", [s["kind"] for s in steps] == expect_kinds, [s["kind"] for s in steps])
-    check("round 3 is spoken with its cue, rest is just Rest",
-          steps[6]["name"] == "Round 3 of 6, work" and steps[6]["speak"].startswith("Bag. Round 3 of 6, work.") and steps[7]["speak"] == "Rest" and steps[7]["cue"] == "",
-          (steps[6]["speak"], steps[7]["speak"]))
+    check("round 3 is spoken as Round 3, later rounds get the pace note, rest is just Rest",
+          steps[6]["name"] == "Round 3 of 6, work" and steps[6]["speak"] == "Round 3" and steps[10]["speak"] == "Round 5, push the pace" and steps[12]["speak"] == "Round 6, push the pace" and steps[7]["speak"] == "Rest" and steps[7]["cue"] == "",
+          (steps[6]["speak"], steps[10]["speak"], steps[12]["speak"], steps[7]["speak"]))
     check("finisher rest pattern expands inside the 2:00",
           steps[14]["seconds"] == 20 and steps[15]["seconds"] == 10 and steps[14]["cue"] == "Fast straight punches." and "after each" not in steps[14]["speak"] and steps[14]["speak"] == "Finisher. Fast straight punches.",
           (steps[14]["cue"], steps[14]["speak"], steps[15]["speak"]))
@@ -370,12 +383,64 @@ with sync_playwright() as p:
         "just stretch",
     ])
     varied = page.evaluate("(t) => window.__chime.parseWorkout(t)", variant)
-    check("unparsed line is kept and not dropped",
-          varied["ok"] is False and len(varied["errors"]) == 1 and "just stretch" in varied["errors"][0]["text"] and len(varied["steps"]) == 19,
+    check("a line with no duration is ignored",
+          varied["ok"] is True and varied["errors"] == [] and len(varied["steps"]) == 19 and all("stretch" not in s["name"] for s in varied["steps"]),
           varied["errors"])
     check("forgiving durations: 3 min, 90 seconds, 2:00, 10s, 20 seconds",
           varied["steps"][0]["seconds"] == 180 and varied["steps"][1]["seconds"] == 90 and varied["steps"][10]["seconds"] == 20 and varied["steps"][11]["seconds"] == 10 and varied["steps"][-1]["name"] == "Hang",
           [(s["name"], s["seconds"]) for s in varied["steps"]])
+    COACH = "\n".join([
+        "Good. Do 30 minutes. Set your chime app to 1-minute chimes.",
+        "Rope, 3 min: Keep it light. Stop if the Achilles feels sharp or worse.",
+        "Rings, 3 min: Do the reverse-grip hang with a tennis ball in each hand.",
+        "Bag, 6 rounds of 2:00 on, 1:00 off (18 min): Use jab-cross-hook. In rounds 5 and 6, push the pace.",
+        "Finisher, 2 min: Fast straight punches. Rest 10 seconds after each 20 seconds.",
+        "Cool-down, 4 min: Walk, then stretch your calves and hip flexors. Do not skip the cool-down.",
+        "Tell me when you finish. That makes training day 2 of 3 this week.",
+    ])
+    coach = page.evaluate("(t) => window.__chime.parseWorkout(t)", COACH)
+    coach_steps = coach["steps"]
+    coach_speak = [
+        "Rope. Keep it light. Stop if the Achilles feels sharp or worse.",
+        "Rings. Do the reverse-grip hang with a tennis ball in each hand.",
+    ]
+    for n in range(1, 7):
+        coach_speak.append("Round %d, push the pace" % n if n >= 5 else "Round %d" % n)
+        coach_speak.append("Rest")
+    for _ in range(4):
+        coach_speak.append("Finisher. Fast straight punches.")
+        coach_speak.append("Rest")
+    coach_speak.append("Cool-down. Walk, then stretch your calves and hip flexors. Do not skip the cool-down.")
+    check("coach message ignores the intro and the closing line",
+          coach["ok"] is True and coach["errors"] == [] and len(coach_steps) == 23 and coach["totalSeconds"] == 1800
+          and [s["name"] for s in coach_steps] == expect_names and [s["seconds"] for s in coach_steps] == expect_secs
+          and all("Tell me" not in s["name"] and "Good" not in s["name"] for s in coach_steps),
+          [(s["name"], s["seconds"]) for s in coach_steps])
+    check("coach message speech is the step name plus the cue",
+          [s["speak"] for s in coach_steps] == coach_speak,
+          [s["speak"] for s in coach_steps])
+    VARIATIONS = "\n".join([
+        "",
+        "Warm up slowly.",
+        "• Rope – 3 minutes: “Keep it light.”",
+        "2) Rings, 3:00 — hang",
+        "Bag, 6 x 2:00 / 1:00 (18 min): Jab. In rounds 5-6, push the pace.",
+        "Finisher, 2 min: Fast. Rest 10s after each 20 seconds.",
+        "- Cool-down (4 min): Walk.",
+        "Tell me when you finish.",
+    ])
+    varied2 = page.evaluate("(t) => window.__chime.parseWorkout(t)", VARIATIONS)
+    vsteps = varied2["steps"]
+    check("variations: dashes, minutes, bullets, smart quotes, Nx, paren time, prose ignored",
+          varied2["ok"] is True and varied2["errors"] == [] and varied2["totalSeconds"] == 1800 and len(vsteps) == 23
+          and vsteps[0]["name"] == "Rope" and vsteps[0]["seconds"] == 180 and "Keep it light" in vsteps[0]["speak"]
+          and vsteps[1]["name"] == "Rings" and vsteps[1]["seconds"] == 180
+          and vsteps[2]["speak"] == "Round 1" and vsteps[10]["speak"] == "Round 5, push the pace" and vsteps[12]["speak"] == "Round 6, push the pace"
+          and vsteps[13]["name"] == "Rest" and vsteps[13]["seconds"] == 60
+          and vsteps[14]["speak"] == "Finisher. Fast." and vsteps[14]["seconds"] == 20 and vsteps[15]["seconds"] == 10
+          and vsteps[22]["name"] == "Cool-down" and vsteps[22]["seconds"] == 240
+          and all("Warm" not in s["name"] and "Tell" not in s["name"] for s in vsteps),
+          [(s["name"], s["seconds"], s["speak"]) for s in vsteps])
 
     page.fill("#workout-text", EXAMPLE)
     page.wait_for_timeout(60)
@@ -400,8 +465,8 @@ with sync_playwright() as p:
     page.fill("#workout-text", "1. **Rope, 3 min:** Easy.\njust stretch\n")
     page.wait_for_timeout(40)
     bad_preview = page.inner_text("#workout-preview")
-    check("preview shows the line that needs a fix", "just stretch" in bad_preview and "No duration" in bad_preview and "Rope" in bad_preview, bad_preview[:400])
-    check("start workout disabled until the line is fixed", page.is_disabled("#btn-start-workout"))
+    check("a line with no duration is left out of the preview", "just stretch" not in bad_preview and "No duration" not in bad_preview and "Rope" in bad_preview, bad_preview[:400])
+    check("start stays enabled when a line has no duration", page.is_enabled("#btn-start-workout") and page.inner_text("#btn-start-workout") == "Start")
 
     page.fill("#workout-text", "1. **Rope, 3 min:** Easy pace.")
     page.wait_for_timeout(40)
@@ -457,6 +522,128 @@ with sync_playwright() as p:
           st["state"] == "done" and page.inner_text("#r-count") == "Done" and "Done" in done_speech and any(e["type"] == "end" for e in logs(page)),
           (st["state"], done_speech))
     page.click("#btn-back")
+
+    # ---------- 6c. any permutation of a pasted plan ----------
+    def round_steps(n, on, off):
+        rows = []
+        for i in range(1, n + 1):
+            rows.append(("Round %d of %d, work" % (i, n), on, "work"))
+            rows.append(("Rest", off, "rest"))
+        return rows
+
+    def interval_steps(name, total, work, rest):
+        rows = []
+        left = total
+        while left > 0:
+            w = min(work, left)
+            rows.append((name, w, "work"))
+            left -= w
+            if left <= 0:
+                break
+            r = min(rest, left)
+            rows.append(("Rest", r, "rest"))
+            left -= r
+        return rows
+
+    def perm_problem(plan, expect):
+        steps = plan["steps"]
+        total = sum(sec for _, sec, _ in expect)
+        if plan["ok"] is not True or plan["errors"] != [] or plan["totalSeconds"] != total:
+            return ("plan", plan["ok"], plan["totalSeconds"], total, plan["errors"])
+        if sum(s["seconds"] for s in steps) != total or len(steps) != len(expect):
+            return ("len", len(steps), len(expect), plan["totalSeconds"])
+        for i, (s, exp) in enumerate(zip(steps, expect)):
+            name, sec, kind = exp
+            if (s["name"], s["seconds"], s["kind"]) != (name, sec, kind):
+                return ("step", i, (s["name"], s["seconds"], s["kind"]), exp)
+            speak = s["speak"]
+            if "after each" in speak.lower() or "off for" in speak.lower():
+                return ("speak-pattern", i, speak)
+            if kind == "rest":
+                if speak != "Rest":
+                    return ("speak", i, speak)
+            elif name.startswith("Round "):
+                if not speak.startswith("Round "):
+                    return ("speak", i, speak)
+            elif not speak.startswith(name):
+                return ("speak", i, speak)
+        return None
+
+    perm_cases = [
+        ("one step in seconds", "Shadowbox, 90 seconds: stay long.", [("Shadowbox", 90, "work")]),
+        ("one step in minutes", "Plank, 2 minutes: tight.", [("Plank", 120, "work")]),
+        ("one step in M:SS", "Squats, 1:30: down and up.", [("Squats", 90, "work")]),
+        ("paren duration", "Warm-up (45s): easy.", [("Warm-up", 45, "work")]),
+        ("bullet, dash, minutes, smart quotes", "• Shadowbox – 3 minutes: “hands up.”", [("Shadowbox", 180, "work")]),
+        ("1 round", "Squats, 1 round of 0:45 on, 0:15 off", round_steps(1, 45, 15)),
+        ("8 rounds of M:SS", "Shadowbox, 8 rounds of 3:00 on, 0:30 off", round_steps(8, 180, 30)),
+        ("10 rounds without of", "Plank, 10 rounds 30 sec on 30 sec off", round_steps(10, 30, 30)),
+        ("slash rounds", "Warm-up, 10 rounds of 0:30 on / 0:15 off", round_steps(10, 30, 15)),
+        ("4 x seconds", "Squats, 4 x 45s / 15s", round_steps(4, 45, 15)),
+        ("nameless 4 x", "4 x 45s / 15s", round_steps(4, 45, 15)),
+        ("3 x on off", "Warm-up, 3 x 20s on, 10s off", round_steps(3, 20, 10)),
+        ("20 rounds", "Shadowbox, 20 rounds of 0:15 on, 0:15 off", round_steps(20, 15, 15)),
+        ("24 rounds", "Plank, 24 rounds of 10 seconds on, 5 seconds off", round_steps(24, 10, 5)),
+        ("on/off for minutes", "20s on/10s off for 4 min", interval_steps("Work", 240, 20, 10)),
+        ("named on/off for", "Plank, 20 seconds on / 10 seconds off for 3 minutes", interval_steps("Plank", 180, 20, 10)),
+        ("on/off inside a short total", "Squats, 70 seconds: 20s on/10s off. Stay tall.", interval_steps("Squats", 70, 20, 10)),
+        ("rest after each, not 30 min", "Shadowbox, 6 min: Rest 15 seconds after each 45 seconds.", interval_steps("Shadowbox", 360, 45, 15)),
+        ("two steps", "Warm-up, 2 min: loose.\nSquats, 30 seconds: down.", [("Warm-up", 120, "work"), ("Squats", 30, "work")]),
+    ]
+    six = [
+        ("Warm-up, 1 min: loose.", [("Warm-up", 60, "work")]),
+        ("Squats, 40 seconds: down.", [("Squats", 40, "work")]),
+        ("Plank, 30 sec: tight.", [("Plank", 30, "work")]),
+        ("Shadowbox, 2:00: hands.", [("Shadowbox", 120, "work")]),
+        ("Squats, 20s: fast.", [("Squats", 20, "work")]),
+        ("Warm-up, 90 seconds: shake.", [("Warm-up", 90, "work")]),
+    ]
+    mixed = [
+        ("Warm-up, 90 sec: loose.", [("Warm-up", 90, "work")]),
+        ("Squats, 4 x 45s / 15s: down.", round_steps(4, 45, 15)),
+        ("Plank, 20s on/10s off for 3 min: tight.", interval_steps("Plank", 180, 20, 10)),
+        ("Shadowbox, 8 rounds of 1:00 on, 0:20 off: hands.", round_steps(8, 60, 20)),
+    ]
+
+    def plan_text(blocks):
+        body = []
+        for line, _steps in blocks:
+            body.append(line)
+        return "\n".join(["Have a good session.", ""] + body + ["", "Tell me when you finish."])
+
+    def plan_steps(blocks):
+        rows = []
+        for _line, steps in blocks:
+            rows.extend(steps)
+        return rows
+
+    perm_cases.append(("six steps in written order", plan_text(six), plan_steps(six)))
+    perm_cases.append(("six steps reversed", plan_text(list(reversed(six))), plan_steps(list(reversed(six)))))
+    perm_cases.append(("mixed formats in written order", plan_text(mixed), plan_steps(mixed)))
+    perm_cases.append(("mixed formats reversed", plan_text(list(reversed(mixed))), plan_steps(list(reversed(mixed)))))
+
+    for label, text, expect in perm_cases:
+        parsed = page.evaluate("(t) => window.__chime.parseWorkout(t)", text)
+        problem = perm_problem(parsed, expect)
+        page.fill("#workout-text", text)
+        page.wait_for_timeout(20)
+        ready = page.is_enabled("#btn-start-workout") and page.inner_text("#btn-start-workout") == "Start"
+        total = parsed["totalSeconds"]
+        check("permutation starts as written: " + label,
+              problem is None and ready and total == sum(sec for _, sec, _ in expect) and total != 1800,
+              problem if problem is not None else (total, len(expect), ready))
+
+    page.fill("#workout-text", "Shadowbox, 8 sec: hands up.\nPlank, 6 sec: tight.")
+    page.wait_for_timeout(40)
+    clear_log(page)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(200)
+    st = page.evaluate("window.__chime.state()")
+    check("runner total is the sum of the steps",
+          st["mode"] == "workout" and st["state"] == "running" and st["totalMs"] == 14000 and st["stepCount"] == 2 and st["stepName"] == "Shadowbox",
+          st)
+    stop(page)
+    page.wait_for_timeout(80)
 
     # ---------- 7. offline ----------
     ctx.set_offline(True)

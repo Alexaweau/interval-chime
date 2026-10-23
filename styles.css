@@ -36,6 +36,41 @@ button, input { font: inherit; color: inherit; }
 }
 #setup.screen { padding: 0; min-height: 0; }
 
+/* ---------- paste a workout, then start ---------- */
+.paste-top {
+  min-height: 100vh;
+  min-height: 100dvh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: calc(22px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
+}
+.paste-top #workout-text {
+  flex: 1 1 auto;
+  min-height: 160px;
+  margin: 0;
+}
+.paste-top #btn-start-workout.huge {
+  margin: 0;
+  min-height: 120px;
+  font-size: 40px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  border-radius: 28px;
+  flex: none;
+}
+.paste-top #workout-preview {
+  flex: none;
+  max-height: 22vh;
+  overflow: auto;
+  margin: 0;
+}
+.paste-top .workout-total { margin: 0 0 8px; font-size: 15px; padding: 8px 10px; }
+.paste-top .wk-block { margin: 6px 0; padding: 8px 10px; }
+.paste-top .wk-head { font-size: 15px; }
+.paste-top .wk-cue, .paste-top .wk-warn, .paste-top .wk-sub li { font-size: 13px; }
+
 /* ---------- main: one wheel + start ---------- */
 .hero {
   min-height: 100vh;
@@ -204,7 +239,7 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   display: block;
   width: 100%;
   min-height: 132px;
-  resize: vertical;
+  resize: none;
   margin: 0;
   padding: 12px 14px;
   font: inherit;
@@ -217,7 +252,6 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   touch-action: pan-y;
 }
 #workout-text:focus { border-color: var(--accent); outline: none; }
-#btn-start-workout { margin-top: 4px; }
 .workout-total { margin-top: 12px; }
 .wk-block {
   background: var(--panel);

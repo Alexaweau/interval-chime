@@ -22,6 +22,12 @@
 <body>
   <!-- ============ SETUP ============ -->
   <main id="setup" class="screen" aria-label="Interval timer">
+    <section class="paste-top" aria-label="Paste workout">
+      <textarea id="workout-text" aria-label="Workout plan" spellcheck="false" autocapitalize="sentences" autocorrect="off" placeholder="Paste the workout as written. One step per line.&#10;Rope, 3 min: Keep it light.&#10;Bag, 6 rounds of 2:00 on, 1:00 off: Jab, cross, hook.&#10;Finisher, 2 min: Fast punches. Rest 10 seconds after each 20 seconds."></textarea>
+      <button type="button" id="btn-start-workout" class="btn primary huge" disabled>Start</button>
+      <div id="workout-preview" hidden aria-live="polite"></div>
+    </section>
+
     <div class="hero">
       <div class="wheel" id="wheel">
         <div class="wheel-lens" aria-hidden="true"></div>
@@ -79,14 +85,6 @@
           <input type="range" id="opt-volume" min="0.1" max="1" step="0.05">
           <button type="button" id="btn-test" class="btn small">Test chime</button>
         </div>
-      </section>
-
-      <section class="group" id="workout-group" aria-labelledby="lbl-workout">
-        <h2 id="lbl-workout">Paste workout</h2>
-        <textarea id="workout-text" rows="7" aria-label="Workout plan" spellcheck="false" autocapitalize="sentences" autocorrect="off" placeholder="One step per line. For example:&#10;1. Rope, 3 min: Keep it light.&#10;2. Bag, 6 rounds of 2:00 on, 1:00 off: Jab, cross, hook.&#10;3. Finisher, 2 min: Fast punches. Rest 10 seconds after each 20 seconds."></textarea>
-        <p class="note">Rounds, and “rest 10 seconds after each 20 seconds,” become separate steps. A line with no time stays listed so you can fix it. Start chimes and speaks each step. On iPhone, leave this app open.</p>
-        <div id="workout-preview" hidden aria-live="polite"></div>
-        <button type="button" id="btn-start-workout" class="btn primary huge" hidden>Start workout</button>
       </section>
 
       <p class="note">On iPhone, keep this app open with the screen on. Locking the phone or switching apps may pause the chimes.</p>
