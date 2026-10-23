@@ -321,6 +321,7 @@
     if (!line) return '';
     line = line.replace(/^#+\s*/, '');
     line = line.replace(/^\d+\s*[.)]\s*/, '');
+    line = line.replace(/^[•·‣∙]\s*/, '');
     line = line.replace(/^[-*]\s+/, '');
     line = line.replace(/\*\*|__/g, '').replace(/\*/g, '').trim();
     return line;
@@ -335,18 +336,47 @@
     }
     return { header: line.trim(), cue: '' };
   }
+  function headerHasDuration(header) {
+    var h = String(header || '').replace(/[.]+$/g, '').trim();
+    if (!h) return false;
+    var split = stripTrailingParen(h);
+    if (takeRounds(split.main, split.paren)) return true;
+    if (parseSimple(split.main)) return true;
+    var parenDur = split.paren ? parseDurationToken(split.paren) : null;
+    var parenName = cleanName(split.main);
+    return !!(parenDur && parenName && nameOk(parenName));
+  }
+  function splitDashCue(line) {
+    var start = 0;
+    var idx;
+    while ((idx = line.indexOf(' - ', start)) !== -1) {
+      var left = line.slice(0, idx).trim();
+      var right = line.slice(idx + 3).trim();
+      if (right && headerHasDuration(left)) return { header: left, cue: right };
+      start = idx + 3;
+    }
+    return null;
+  }
   function stripTrailingParen(s) {
     var m = s.match(/^(.*\S)\s*\(([^()]*)\)\s*$/);
     if (!m) return { main: s.trim(), paren: '' };
     return { main: m[1].trim(), paren: m[2].trim() };
   }
   function cleanName(name) {
-    return String(name || '').replace(/[\s,;:-]+$/g, '').replace(/^\s*[-]\s*/, '').replace(/\s+for$/i, '').trim();
+    return String(name || '').replace(/[\s,;:-]+$/g, '').replace(/^\s*[-]\s*/, '').replace(/^["']+|["']+$/g, '').replace(/\s+for$/i, '').trim();
+  }
+  function nameOk(name) {
+    var n = String(name || '').trim();
+    if (!n) return false;
+    if (/[.!?]/.test(n)) return false;
+    if (n.length > 48) return false;
+    if (n.split(/\s+/).length > 6) return false;
+    return true;
   }
   function parseRounds(header) {
     var re = new RegExp(
-      '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s+rounds?\\s+of\\s+' + DUR_SRC +
-      '\\s+(?:on|work)\\s*(?:,|/|and)\\s*' + DUR_SRC + '\\s+(?:off|rest)\\s*$',
+      '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s+rounds?(?:\\s+of)?\\s+' + DUR_SRC +
+      '\\s+(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC + '\\s+(?:off|rest)\\s*$',
       'i'
     );
     var m = header.match(re);
@@ -355,9 +385,45 @@
     var n = parseInt(m[2], 10);
     var onSec = parseDurationToken(m[3]);
     var offSec = parseDurationToken(m[4]);
-    if (!(n > 0) || n > 300 || !onSec || !offSec) return { error: true, reason: 'Could not read the rounds. Try 6 rounds of 2:00 on, 1:00 off.' };
-    if (n * (onSec + offSec) > MAX_BLOCK_S) return { error: true, reason: 'That block is longer than 6 hours.' };
+    if (!(n > 0) || n > 300 || !onSec || !offSec) return null;
+    if (name && !nameOk(name)) return null;
+    if (n * (onSec + offSec) > MAX_BLOCK_S) return null;
     return { name: name || 'Work', rounds: n, onSec: onSec, offSec: offSec };
+  }
+  function parseRepeat(header) {
+    var re = new RegExp(
+      '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s*[x×]\\s*' + DUR_SRC +
+      '\\s*(?:on|work)?\\s*(?:/|,|and)\\s*' + DUR_SRC + '\\s*(?:off|rest)?\\s*$',
+      'i'
+    );
+    var m = header.match(re);
+    if (!m) return null;
+    var name = cleanName(m[1]);
+    var n = parseInt(m[2], 10);
+    var onSec = parseDurationToken(m[3]);
+    var offSec = parseDurationToken(m[4]);
+    if (!(n > 0) || n > 300 || !onSec || !offSec) return null;
+    if (name && !nameOk(name)) return null;
+    if (n * (onSec + offSec) > MAX_BLOCK_S) return null;
+    return { name: name || 'Work', rounds: n, onSec: onSec, offSec: offSec };
+  }
+  function parseOnOffFor(header) {
+    var re = new RegExp(
+      '^(.*?)(?:[,\\-]\\s*|\\s+)?' + DUR_SRC +
+      '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC +
+      '\\s*(?:off|rest)?\\s+for\\s+' + DUR_SRC + '\\s*$',
+      'i'
+    );
+    var m = header.match(re);
+    if (!m) return null;
+    var name = cleanName(m[1]);
+    var onSec = parseDurationToken(m[2]);
+    var offSec = parseDurationToken(m[3]);
+    var total = parseDurationToken(m[4]);
+    if (!onSec || !offSec || !total) return null;
+    if (name && !nameOk(name)) return null;
+    if (total > MAX_BLOCK_S) return null;
+    return { name: name || 'Work', seconds: total, workSec: onSec, restSec: offSec };
   }
   function parseSimple(header) {
     var re = new RegExp('^(.*\\S)\\s+' + DUR_SRC + '\\s*$', 'i');
@@ -365,9 +431,54 @@
     if (!m) return null;
     var name = cleanName(m[1]);
     var seconds = parseDurationToken(m[2]);
-    if (!name || !seconds) return null;
-    if (seconds > MAX_BLOCK_S) return { error: true, reason: 'That time is longer than 6 hours.' };
+    if (!name || !nameOk(name) || !seconds) return null;
+    if (seconds > MAX_BLOCK_S) return null;
     return { name: name, seconds: seconds };
+  }
+  function roundList(raw) {
+    var text = String(raw || '').toLowerCase().replace(/\band\b/g, ',').replace(/\bto\b/g, '-');
+    var bits = text.split(',');
+    var nums = [];
+    var i, bit, range, a, b, n, one, tmp;
+    for (i = 0; i < bits.length; i++) {
+      bit = bits[i];
+      range = bit.match(/(\d+)\s*-\s*(\d+)/);
+      if (range) {
+        a = parseInt(range[1], 10);
+        b = parseInt(range[2], 10);
+        if (a > b) { tmp = a; a = b; b = tmp; }
+        if (b - a > 40) continue;
+        for (n = a; n <= b; n++) nums.push(n);
+      } else {
+        one = bit.match(/(\d+)/);
+        if (one) nums.push(parseInt(one[1], 10));
+      }
+    }
+    return nums;
+  }
+  function roundNotes(cue) {
+    var notes = {};
+    var re = /(?:^|[.]\s*)(?:in\s+)?rounds?\s+([0-9][0-9,\s\-toand]*)[,:]?\s*([^.]*)/gi;
+    var m, nums, note, i;
+    while ((m = re.exec(String(cue || '')))) {
+      nums = roundList(m[1]);
+      note = tidyCue(m[2]).replace(/^[,\s]+|[.\s]+$/g, '');
+      if (!note) continue;
+      for (i = 0; i < nums.length; i++) notes[nums[i]] = note;
+    }
+    return notes;
+  }
+  function findOnOffPattern(text) {
+    var re = new RegExp(
+      DUR_SRC + '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC + '\\s*(?:off|rest)?',
+      'i'
+    );
+    var m = String(text || '').match(re);
+    if (!m) return null;
+    var onSec = parseDurationToken(m[1]);
+    var offSec = parseDurationToken(m[2]);
+    if (!onSec || !offSec) return null;
+    return { match: m[0], onSec: onSec, offSec: offSec };
   }
   function findRestPattern(text) {
     for (var i = 0; i < REST_PATTERNS.length; i++) {
@@ -414,48 +525,57 @@
     return step;
   }
   function tidyCue(cue) {
-    return String(cue || '').replace(/\s+/g, ' ').replace(/\s+([.])/g, '$1').replace(/(?:[.] ?){2,}/g, '. ').trim();
+    return String(cue || '').replace(/\s+/g, ' ').replace(/\s+([.])/g, '$1').replace(/(?:[.] ?){2,}/g, '. ').replace(/^[\s.,;:-]+/, '').trim();
+  }
+  function takeRounds(header, paren) {
+    var rounds = parseRounds(header);
+    if (!rounds) rounds = parseRepeat(header);
+    if (!rounds) return null;
+    var noted = paren ? parseDurationToken(paren) : null;
+    var sum = rounds.rounds * (rounds.onSec + rounds.offSec);
+    var warning = '';
+    if (noted && Math.abs(noted - sum) > 1) warning = 'Adds up to ' + fmt(sum) + ', the note says ' + fmt(noted) + '.';
+    return {
+      name: rounds.name, rounds: rounds.rounds,
+      onSec: rounds.onSec, offSec: rounds.offSec, warning: warning
+    };
   }
   function parseWorkoutLine(raw) {
     var line = cleanLine(raw);
     if (!line) return null;
     var parts = splitHeaderCue(line);
+    if (!parts.cue) {
+      var dashed = splitDashCue(line);
+      if (dashed) parts = dashed;
+    }
     var header = parts.header.replace(/[.]+$/g, '').trim();
     var cue = parts.cue;
-    if (!header) return { error: true, reason: 'No duration found. Try 3 min, 2:00, or 20 seconds.' };
+    if (!header) return null;
     var split = stripTrailingParen(header);
-    var rounds = parseRounds(split.main);
-    if (!rounds && !split.paren) rounds = parseRounds(header);
-    if (rounds && rounds.error) return rounds;
+    var rounds = takeRounds(split.main, split.paren);
+    if (!rounds && !split.paren) rounds = takeRounds(header, '');
     if (rounds) {
-      var noted = split.paren ? parseDurationToken(split.paren) : null;
-      var sum = rounds.rounds * (rounds.onSec + rounds.offSec);
-      var warning = '';
-      if (noted && Math.abs(noted - sum) > 1) warning = 'Adds up to ' + fmt(sum) + ', the note says ' + fmt(noted) + '.';
-      return {
-        name: rounds.name, cue: tidyCue(cue), rounds: rounds.rounds,
-        onSec: rounds.onSec, offSec: rounds.offSec, warning: warning
-      };
+      rounds.cue = tidyCue(cue);
+      return rounds;
     }
-    if (/\d+\s+rounds?\s+of/i.test(header)) {
-      return { error: true, reason: 'Could not read the rounds. Try 6 rounds of 2:00 on, 1:00 off.' };
+    var timed = parseOnOffFor(split.main);
+    if (!timed && !split.paren) timed = parseOnOffFor(header);
+    if (timed) {
+      timed.cue = tidyCue(cue);
+      return timed;
     }
+    if (/\d+\s+rounds?\b/i.test(header)) return null;
     var simple = parseSimple(split.main);
     var parenDur = split.paren ? parseDurationToken(split.paren) : null;
-    if (!simple && parenDur && cleanName(split.main)) simple = { name: cleanName(split.main), seconds: parenDur };
-    if (simple && simple.error) return simple;
-    if (!simple) return { error: true, reason: 'No duration found. Try 3 min, 2:00, or 20 seconds.' };
+    var parenName = cleanName(split.main);
+    if (!simple && parenDur && parenName && nameOk(parenName)) simple = { name: parenName, seconds: parenDur };
+    if (!simple) return null;
     var restHit = findRestPattern(cue) || findRestPattern(header);
     var restSec = 0, everySec = 0;
     if (restHit) {
       restSec = parseDurationLoose(restHit.restRaw);
       everySec = parseDurationLoose(restHit.everyRaw);
-      if (!restSec || !everySec) {
-        if (/\d/.test(restHit.restRaw) || /\d/.test(restHit.everyRaw)) {
-          return { error: true, reason: 'Could not read the rest pattern. Try Rest 10 seconds after each 20 seconds.' };
-        }
-        restHit = null;
-      }
+      if (!restSec || !everySec) restHit = null;
     }
     if (restHit) {
       return {
@@ -463,14 +583,26 @@
         workSec: everySec, restSec: restSec
       };
     }
+    var onOff = findOnOffPattern(cue);
+    if (!onOff) onOff = findOnOffPattern(header);
+    if (onOff) {
+      var leftCue = cue.replace(onOff.match, '').replace(/^[\s.,;:-]+/, '');
+      return {
+        name: simple.name, cue: tidyCue(leftCue), seconds: simple.seconds,
+        workSec: onOff.onSec, restSec: onOff.offSec
+      };
+    }
     return { name: simple.name, cue: tidyCue(cue), seconds: simple.seconds };
   }
   function expandParsed(parsed) {
     var steps = [];
-    var i, j, seg;
+    var i, j, seg, step, notes;
     if (parsed.rounds) {
+      notes = roundNotes(parsed.cue);
       for (i = 1; i <= parsed.rounds; i++) {
-        steps.push(makeStep(parsed.name, 'Round ' + i + ' of ' + parsed.rounds + ', work', parsed.cue, parsed.onSec, 'work'));
+        step = makeStep(parsed.name, 'Round ' + i + ' of ' + parsed.rounds + ', work', parsed.cue, parsed.onSec, 'work');
+        step.speak = notes[i] ? ('Round ' + i + ', ' + notes[i]) : ('Round ' + i);
+        steps.push(step);
         steps.push(makeStep(parsed.name, 'Rest', '', parsed.offSec, 'rest'));
       }
     } else if (parsed.workSec) {
@@ -492,27 +624,16 @@
     var lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     for (var i = 0; i < lines.length; i++) {
       if (!String(lines[i] || '').trim()) continue;
-      if (blocks.length + errors.length >= 200) {
-        var stopErr = { line: i + 1, text: String(lines[i]).trim(), reason: 'Stopped after 200 lines.' };
-        errors.push(stopErr);
-        blocks.push({ error: true, line: stopErr.line, text: stopErr.text, reason: stopErr.reason });
-        break;
-      }
+      if (blocks.length >= 200) break;
       var parsed = parseWorkoutLine(lines[i]);
-      if (!parsed) continue;
-      if (parsed.error) {
-        var err = { line: i + 1, text: String(lines[i]).trim(), reason: parsed.reason };
-        errors.push(err);
-        blocks.push({ error: true, line: err.line, text: err.text, reason: err.reason });
-        continue;
-      }
+      if (!parsed || parsed.error) continue;
       var block = expandParsed(parsed);
       blocks.push(block);
       for (var s = 0; s < block.steps.length; s++) steps.push(block.steps[s]);
     }
     var total = 0;
     for (var t = 0; t < steps.length; t++) total += steps[t].seconds;
-    return { ok: steps.length > 0 && errors.length === 0, blocks: blocks, steps: steps, errors: errors, totalSeconds: total };
+    return { ok: steps.length > 0, blocks: blocks, steps: steps, errors: errors, totalSeconds: total };
   }
   function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
   function workoutSummaryText(plan) {
@@ -579,24 +700,23 @@
     return box;
   }
   function renderWorkoutPreview() {
-    if (!ui.workoutPreview || !ui.workoutText) return;
+    if (!ui.workoutPreview || !ui.workoutText || !ui.workoutStart) return;
     clearNode(ui.workoutPreview);
-    if (!ui.workoutText.value.trim()) {
+    ui.workoutStart.hidden = false;
+    ui.workoutStart.textContent = 'Start';
+    var plan = workoutPlan;
+    if (!plan.steps.length) {
       ui.workoutPreview.hidden = true;
-      ui.workoutStart.hidden = true;
       ui.workoutStart.disabled = true;
       return;
     }
-    var plan = workoutPlan;
     ui.workoutPreview.hidden = false;
-    ui.workoutStart.hidden = false;
+    ui.workoutStart.disabled = false;
     var totalLine = document.createElement('p');
-    totalLine.className = 'summary workout-total' + (plan.ok ? '' : ' err');
+    totalLine.className = 'summary workout-total';
     totalLine.textContent = workoutSummaryText(plan);
     ui.workoutPreview.appendChild(totalLine);
     plan.blocks.forEach(function (b) { ui.workoutPreview.appendChild(renderBlock(b)); });
-    ui.workoutStart.disabled = !plan.ok;
-    ui.workoutStart.textContent = plan.ok ? 'Start workout' : 'Fix highlighted lines';
   }
   function onWorkoutInput() {
     workoutPlan = parseWorkout(ui.workoutText.value);
