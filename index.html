@@ -81,6 +81,14 @@
         </div>
       </section>
 
+      <section class="group" id="workout-group" aria-labelledby="lbl-workout">
+        <h2 id="lbl-workout">Paste workout</h2>
+        <textarea id="workout-text" rows="7" aria-label="Workout plan" spellcheck="false" autocapitalize="sentences" autocorrect="off" placeholder="One step per line. For example:&#10;1. Rope, 3 min: Keep it light.&#10;2. Bag, 6 rounds of 2:00 on, 1:00 off: Jab, cross, hook.&#10;3. Finisher, 2 min: Fast punches. Rest 10 seconds after each 20 seconds."></textarea>
+        <p class="note">Rounds, and “rest 10 seconds after each 20 seconds,” become separate steps. A line with no time stays listed so you can fix it. Start chimes and speaks each step. On iPhone, leave this app open.</p>
+        <div id="workout-preview" hidden aria-live="polite"></div>
+        <button type="button" id="btn-start-workout" class="btn primary huge" hidden>Start workout</button>
+      </section>
+
       <p class="note">On iPhone, keep this app open with the screen on. Locking the phone or switching apps may pause the chimes.</p>
       <p class="note dim">No tracking. Works offline. Settings are saved on this device.</p>
     </div>
@@ -112,6 +120,7 @@
 
     <div class="controls">
       <button type="button" id="btn-pause" class="btn primary huge">Pause</button>
+      <button type="button" id="btn-skip" class="btn huge" hidden>Skip</button>
       <button type="button" id="btn-stop" class="btn danger huge">Stop</button>
     </div>
     <div class="controls done-controls" hidden id="done-controls">

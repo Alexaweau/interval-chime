@@ -1,6 +1,8 @@
 /* Interval Chime: plain JS, no dependencies, no tracking.
-   Two alternating intervals (work, rest). A chime marks the end of each,
-   and a triple chime marks the end of the session. */
+   Two alternating intervals (work, rest), or a pasted workout.
+   A chime marks the end of each interval. A pasted plan is a sequence of
+   steps: chime and speak at each step, and a chime each minute inside a
+   long step. A triple chime marks the end of the session. */
 (function () {
   'use strict';
 
@@ -276,10 +278,384 @@
     }, 5);
   }
 
+  // ---------- pasted workout ----------
+  var MAX_BLOCK_S = 6 * 3600;
+  var DUR_SRC = '(\\d+:\\d{1,2}(?::\\d{2})?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s))';
+  var REST_PATTERNS = [
+    /rest(?:ing)?\s+(.+?)\s+after\s+(?:each|every)\s+(.+?)(?=[.]|$)/i,
+    /(.+?)\s+rest\s+after\s+(?:each|every)\s+(.+?)(?=[.]|$)/i
+  ];
+  var workoutPlan = { ok: false, blocks: [], steps: [], errors: [], totalSeconds: 0 };
+  var activeUtterance = null;
+  var speechPulse = 0;
+
+  function parseDurationToken(raw) {
+    if (raw == null) return null;
+    var str = String(raw).trim().toLowerCase().replace(/\.\s*$/, '').replace(/\s+/g, ' ');
+    if (!str) return null;
+    var m = str.match(/^(\d+):(\d{1,2})(?::(\d{2}))?$/);
+    if (m) {
+      var a = +m[1], b = +m[2], c = m[3] != null ? +m[3] : null;
+      if (b > 59 || (c != null && c > 59)) return null;
+      var sec = c == null ? a * 60 + b : a * 3600 + b * 60 + c;
+      return sec > 0 ? sec : null;
+    }
+    m = str.match(/^(\d+(?:\.\d+)?)\s*(hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)$/);
+    if (!m) return null;
+    var n = parseFloat(m[1]);
+    if (!(n > 0) || !isFinite(n)) return null;
+    var unit = m[2];
+    var mult = /^h/.test(unit) ? 3600 : (/^m/.test(unit) ? 60 : 1);
+    var out = Math.round(n * mult);
+    return out > 0 ? out : null;
+  }
+  function parseDurationLoose(raw) {
+    var exact = parseDurationToken(raw);
+    if (exact) return exact;
+    var re = new RegExp(DUR_SRC + '\\s*$', 'i');
+    var m = String(raw || '').trim().match(re);
+    return m ? parseDurationToken(m[1]) : null;
+  }
+  function cleanLine(raw) {
+    var line = String(raw || '').replace(/\u00A0/g, ' ').replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/[\u2013\u2014]/g, '-').trim();
+    if (!line) return '';
+    line = line.replace(/^#+\s*/, '');
+    line = line.replace(/^\d+\s*[.)]\s*/, '');
+    line = line.replace(/^[-*]\s+/, '');
+    line = line.replace(/\*\*|__/g, '').replace(/\*/g, '').trim();
+    return line;
+  }
+  function splitHeaderCue(line) {
+    for (var i = 0; i < line.length; i++) {
+      if (line.charAt(i) !== ':') continue;
+      var prev = i > 0 ? line.charAt(i - 1) : '';
+      var next = i + 1 < line.length ? line.charAt(i + 1) : '';
+      if (/[0-9]/.test(prev) && /[0-9]/.test(next)) continue;
+      return { header: line.slice(0, i).trim(), cue: line.slice(i + 1).trim() };
+    }
+    return { header: line.trim(), cue: '' };
+  }
+  function stripTrailingParen(s) {
+    var m = s.match(/^(.*\S)\s*\(([^()]*)\)\s*$/);
+    if (!m) return { main: s.trim(), paren: '' };
+    return { main: m[1].trim(), paren: m[2].trim() };
+  }
+  function cleanName(name) {
+    return String(name || '').replace(/[\s,;:-]+$/g, '').replace(/^\s*[-]\s*/, '').replace(/\s+for$/i, '').trim();
+  }
+  function parseRounds(header) {
+    var re = new RegExp(
+      '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s+rounds?\\s+of\\s+' + DUR_SRC +
+      '\\s+(?:on|work)\\s*(?:,|/|and)\\s*' + DUR_SRC + '\\s+(?:off|rest)\\s*$',
+      'i'
+    );
+    var m = header.match(re);
+    if (!m) return null;
+    var name = cleanName(m[1]);
+    var n = parseInt(m[2], 10);
+    var onSec = parseDurationToken(m[3]);
+    var offSec = parseDurationToken(m[4]);
+    if (!(n > 0) || n > 300 || !onSec || !offSec) return { error: true, reason: 'Could not read the rounds. Try 6 rounds of 2:00 on, 1:00 off.' };
+    if (n * (onSec + offSec) > MAX_BLOCK_S) return { error: true, reason: 'That block is longer than 6 hours.' };
+    return { name: name || 'Work', rounds: n, onSec: onSec, offSec: offSec };
+  }
+  function parseSimple(header) {
+    var re = new RegExp('^(.*\\S)\\s+' + DUR_SRC + '\\s*$', 'i');
+    var m = header.match(re);
+    if (!m) return null;
+    var name = cleanName(m[1]);
+    var seconds = parseDurationToken(m[2]);
+    if (!name || !seconds) return null;
+    if (seconds > MAX_BLOCK_S) return { error: true, reason: 'That time is longer than 6 hours.' };
+    return { name: name, seconds: seconds };
+  }
+  function findRestPattern(text) {
+    for (var i = 0; i < REST_PATTERNS.length; i++) {
+      var m = text.match(REST_PATTERNS[i]);
+      if (m) return { match: m[0], restRaw: m[1], everyRaw: m[2] };
+    }
+    return null;
+  }
+  function expandOnOff(total, work, rest) {
+    var out = [];
+    var left = total;
+    var guard = 0;
+    while (left > 0 && guard++ < 500) {
+      var w = Math.min(work, left);
+      if (!(w > 0)) break;
+      out.push({ kind: 'work', seconds: w });
+      left -= w;
+      if (!(left > 0)) break;
+      var r = Math.min(rest, left);
+      if (!(r > 0)) break;
+      out.push({ kind: 'rest', seconds: r });
+      left -= r;
+    }
+    return out;
+  }
+  function clipSpeech(text, seconds) {
+    var maxChars = Math.max(24, Math.floor((seconds || 1) * 14));
+    if (!text || text.length <= maxChars) return text;
+    var cut = text.slice(0, maxChars);
+    var sp = cut.lastIndexOf(' ');
+    if (sp > 20) cut = cut.slice(0, sp);
+    return cut.replace(/[.,;:\s]+$/g, '') + '.';
+  }
+  function speakFor(step) {
+    if (step.kind === 'rest') return 'Rest';
+    var head = step.name;
+    if (step.block && step.block !== step.name && step.name.indexOf(step.block) !== 0) head = step.block + '. ' + step.name;
+    var text = step.cue ? head + '. ' + step.cue : head;
+    return clipSpeech(text, step.seconds);
+  }
+  function makeStep(block, name, cue, seconds, kind) {
+    var step = { block: block, name: name, cue: cue || '', seconds: seconds, kind: kind };
+    step.speak = speakFor(step);
+    return step;
+  }
+  function tidyCue(cue) {
+    return String(cue || '').replace(/\s+/g, ' ').replace(/\s+([.])/g, '$1').replace(/(?:[.] ?){2,}/g, '. ').trim();
+  }
+  function parseWorkoutLine(raw) {
+    var line = cleanLine(raw);
+    if (!line) return null;
+    var parts = splitHeaderCue(line);
+    var header = parts.header.replace(/[.]+$/g, '').trim();
+    var cue = parts.cue;
+    if (!header) return { error: true, reason: 'No duration found. Try 3 min, 2:00, or 20 seconds.' };
+    var split = stripTrailingParen(header);
+    var rounds = parseRounds(split.main);
+    if (!rounds && !split.paren) rounds = parseRounds(header);
+    if (rounds && rounds.error) return rounds;
+    if (rounds) {
+      var noted = split.paren ? parseDurationToken(split.paren) : null;
+      var sum = rounds.rounds * (rounds.onSec + rounds.offSec);
+      var warning = '';
+      if (noted && Math.abs(noted - sum) > 1) warning = 'Adds up to ' + fmt(sum) + ', the note says ' + fmt(noted) + '.';
+      return {
+        name: rounds.name, cue: tidyCue(cue), rounds: rounds.rounds,
+        onSec: rounds.onSec, offSec: rounds.offSec, warning: warning
+      };
+    }
+    if (/\d+\s+rounds?\s+of/i.test(header)) {
+      return { error: true, reason: 'Could not read the rounds. Try 6 rounds of 2:00 on, 1:00 off.' };
+    }
+    var simple = parseSimple(split.main);
+    var parenDur = split.paren ? parseDurationToken(split.paren) : null;
+    if (!simple && parenDur && cleanName(split.main)) simple = { name: cleanName(split.main), seconds: parenDur };
+    if (simple && simple.error) return simple;
+    if (!simple) return { error: true, reason: 'No duration found. Try 3 min, 2:00, or 20 seconds.' };
+    var restHit = findRestPattern(cue) || findRestPattern(header);
+    var restSec = 0, everySec = 0;
+    if (restHit) {
+      restSec = parseDurationLoose(restHit.restRaw);
+      everySec = parseDurationLoose(restHit.everyRaw);
+      if (!restSec || !everySec) {
+        if (/\d/.test(restHit.restRaw) || /\d/.test(restHit.everyRaw)) {
+          return { error: true, reason: 'Could not read the rest pattern. Try Rest 10 seconds after each 20 seconds.' };
+        }
+        restHit = null;
+      }
+    }
+    if (restHit) {
+      return {
+        name: simple.name, cue: tidyCue(cue.replace(restHit.match, '')), seconds: simple.seconds,
+        workSec: everySec, restSec: restSec
+      };
+    }
+    return { name: simple.name, cue: tidyCue(cue), seconds: simple.seconds };
+  }
+  function expandParsed(parsed) {
+    var steps = [];
+    var i, j, seg;
+    if (parsed.rounds) {
+      for (i = 1; i <= parsed.rounds; i++) {
+        steps.push(makeStep(parsed.name, 'Round ' + i + ' of ' + parsed.rounds + ', work', parsed.cue, parsed.onSec, 'work'));
+        steps.push(makeStep(parsed.name, 'Rest', '', parsed.offSec, 'rest'));
+      }
+    } else if (parsed.workSec) {
+      var segs = expandOnOff(parsed.seconds, parsed.workSec, parsed.restSec);
+      for (j = 0; j < segs.length; j++) {
+        seg = segs[j];
+        if (seg.kind === 'rest') steps.push(makeStep(parsed.name, 'Rest', '', seg.seconds, 'rest'));
+        else steps.push(makeStep(parsed.name, parsed.name, parsed.cue, seg.seconds, 'work'));
+      }
+    } else {
+      steps.push(makeStep(parsed.name, parsed.name, parsed.cue, parsed.seconds, 'work'));
+    }
+    var seconds = 0;
+    for (i = 0; i < steps.length; i++) seconds += steps[i].seconds;
+    return { name: parsed.name, cue: parsed.cue, seconds: seconds, warning: parsed.warning || '', steps: steps };
+  }
+  function parseWorkout(text) {
+    var blocks = [], steps = [], errors = [];
+    var lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (!String(lines[i] || '').trim()) continue;
+      if (blocks.length + errors.length >= 200) {
+        var stopErr = { line: i + 1, text: String(lines[i]).trim(), reason: 'Stopped after 200 lines.' };
+        errors.push(stopErr);
+        blocks.push({ error: true, line: stopErr.line, text: stopErr.text, reason: stopErr.reason });
+        break;
+      }
+      var parsed = parseWorkoutLine(lines[i]);
+      if (!parsed) continue;
+      if (parsed.error) {
+        var err = { line: i + 1, text: String(lines[i]).trim(), reason: parsed.reason };
+        errors.push(err);
+        blocks.push({ error: true, line: err.line, text: err.text, reason: err.reason });
+        continue;
+      }
+      var block = expandParsed(parsed);
+      blocks.push(block);
+      for (var s = 0; s < block.steps.length; s++) steps.push(block.steps[s]);
+    }
+    var total = 0;
+    for (var t = 0; t < steps.length; t++) total += steps[t].seconds;
+    return { ok: steps.length > 0 && errors.length === 0, blocks: blocks, steps: steps, errors: errors, totalSeconds: total };
+  }
+  function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function workoutSummaryText(plan) {
+    var n = plan.steps.length;
+    var parts = [n + (n === 1 ? ' step' : ' steps'), fmt(plan.totalSeconds || 0)];
+    if (plan.errors.length) {
+      var k = plan.errors.length;
+      parts.push(k + (k === 1 ? ' line needs a fix' : ' lines need a fix'));
+    }
+    return parts.join(' · ');
+  }
+  function renderBlock(b) {
+    var box = document.createElement('div');
+    box.className = 'wk-block' + (b.error ? ' bad' : '');
+    if (b.error) {
+      var why = document.createElement('div');
+      why.className = 'why';
+      why.textContent = 'Line ' + b.line + ': ' + b.reason;
+      var raw = document.createElement('div');
+      raw.className = 'wk-cue';
+      raw.textContent = b.text;
+      box.appendChild(why);
+      box.appendChild(raw);
+      return box;
+    }
+    var head = document.createElement('div');
+    head.className = 'wk-head';
+    var nm = document.createElement('span');
+    nm.textContent = b.name;
+    var tm = document.createElement('span');
+    tm.className = 'tm';
+    tm.textContent = fmt(b.seconds);
+    head.appendChild(nm);
+    head.appendChild(tm);
+    box.appendChild(head);
+    if (b.steps.length > 1) {
+      var ul = document.createElement('ul');
+      ul.className = 'wk-sub';
+      b.steps.forEach(function (s) {
+        var li = document.createElement('li');
+        var a = document.createElement('span');
+        a.textContent = s.name;
+        var c = document.createElement('span');
+        c.className = 'tm';
+        c.textContent = fmt(s.seconds);
+        li.appendChild(a);
+        li.appendChild(c);
+        ul.appendChild(li);
+      });
+      box.appendChild(ul);
+    }
+    if (b.cue) {
+      var cue = document.createElement('div');
+      cue.className = 'wk-cue';
+      cue.textContent = b.cue;
+      box.appendChild(cue);
+    }
+    if (b.warning) {
+      var w = document.createElement('div');
+      w.className = 'wk-warn';
+      w.textContent = b.warning;
+      box.appendChild(w);
+    }
+    return box;
+  }
+  function renderWorkoutPreview() {
+    if (!ui.workoutPreview || !ui.workoutText) return;
+    clearNode(ui.workoutPreview);
+    if (!ui.workoutText.value.trim()) {
+      ui.workoutPreview.hidden = true;
+      ui.workoutStart.hidden = true;
+      ui.workoutStart.disabled = true;
+      return;
+    }
+    var plan = workoutPlan;
+    ui.workoutPreview.hidden = false;
+    ui.workoutStart.hidden = false;
+    var totalLine = document.createElement('p');
+    totalLine.className = 'summary workout-total' + (plan.ok ? '' : ' err');
+    totalLine.textContent = workoutSummaryText(plan);
+    ui.workoutPreview.appendChild(totalLine);
+    plan.blocks.forEach(function (b) { ui.workoutPreview.appendChild(renderBlock(b)); });
+    ui.workoutStart.disabled = !plan.ok;
+    ui.workoutStart.textContent = plan.ok ? 'Start workout' : 'Fix highlighted lines';
+  }
+  function onWorkoutInput() {
+    workoutPlan = parseWorkout(ui.workoutText.value);
+    renderWorkoutPreview();
+  }
+
+  function ensureSpeechPulse() {
+    if (speechPulse || !window.speechSynthesis) return;
+    speechPulse = setInterval(function () {
+      try {
+        if (window.speechSynthesis && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.resume();
+      } catch (e) { /* ignore */ }
+    }, 5000);
+  }
+  function unlockSpeech() {
+    if (!window.speechSynthesis) return;
+    try { window.speechSynthesis.getVoices(); } catch (e) { /* ignore */ }
+    try { window.speechSynthesis.resume(); } catch (e) { /* ignore */ }
+    ensureSpeechPulse();
+  }
+  function stopSpeech() {
+    activeUtterance = null;
+    try {
+      if (window.speechSynthesis && (speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel();
+    } catch (e) { /* ignore */ }
+  }
+  function speak(text) {
+    var synth = window.speechSynthesis;
+    if (!synth || !window.SpeechSynthesisUtterance || !text) return;
+    var u;
+    try { u = new SpeechSynthesisUtterance(text); } catch (e) { log({ type: 'speech-error', msg: String(e) }); return; }
+    u.lang = 'en-US';
+    u.rate = 1;
+    var vol = Number(settings.volume);
+    if (!isFinite(vol)) vol = 0.9;
+    u.volume = Math.min(1, Math.max(0.5, vol));
+    activeUtterance = u;
+    ensureSpeechPulse();
+    try { synth.resume(); } catch (e) { /* ignore */ }
+    try {
+      if (synth.speaking || synth.pending) {
+        try { synth.cancel(); } catch (e) { /* ignore */ }
+        setTimeout(function () {
+          if (activeUtterance !== u) return;
+          try { synth.resume(); synth.speak(u); } catch (err) { log({ type: 'speech-error', msg: String(err) }); }
+        }, 60);
+      } else {
+        synth.speak(u);
+      }
+      log({ type: 'speak', text: text });
+    } catch (err) {
+      log({ type: 'speech-error', msg: String(err) });
+    }
+  }
+
   // ---------- session engine ----------
   var run = {
-    state: 'idle', workMs: 60000, restMs: 30000, totalMs: 900000, leadIn: false,
-    startPerf: 0, pausedElapsed: 0, firedIdx: 0, schedIdx: 0, cues: [],
+    state: 'idle', mode: 'intervals', workMs: 60000, restMs: 30000, totalMs: 900000, leadIn: false,
+    startPerf: 0, pausedElapsed: 0, firedIdx: 0, schedIdx: 0, cues: [], steps: [], announcedStep: -1,
     lastTickPerf: 0, lastTickWall: 0
   };
   function elapsedMs() { return run.state === 'running' ? now() - run.startPerf : run.pausedElapsed; }
@@ -343,13 +719,14 @@
       run.schedIdx++;
       if (cue.t < el - 250) continue;
       var prev = idx > 0 ? run.cues[idx - 1].t : 0;
-      leadIns(cue.t, prev);
+      var silent = cue.kind === 'warn' || cue.noChime;
+      if (!silent) leadIns(cue.t, prev);
       var a = at(cue.t);
       if (a === null) continue;
       if (cue.kind === 'end') {
         playEnd(a);
         log({ type: 'sched-end', t: cue.t, audio: +a.toFixed(3) });
-      } else {
+      } else if (!silent) {
         playChime(a);
         log({ type: 'sched-chime', k: idx + 1, t: cue.t, phase: cue.phase, audio: +a.toFixed(3) });
       }
@@ -389,6 +766,9 @@
     var T = settings.open ? Infinity : settings.total;
     if (!(W >= MIN_INTERVAL_S && R >= MIN_INTERVAL_S)) return;
     if (!settings.open && !(T >= W + R && T % (W + R) === 0)) return;
+    run.mode = 'intervals';
+    run.steps = [];
+    run.announcedStep = -1;
     ensureAudio();
     startKeepAlive();
     run.workMs = W * 1000;
@@ -418,6 +798,7 @@
     run.pausedElapsed = elapsedMs();
     run.state = 'paused';
     cancelSounds(false);
+    stopSpeech();
     log({ type: 'pause', elapsed: Math.round(run.pausedElapsed) });
     render(); updateMediaSession();
   }
@@ -437,21 +818,190 @@
     if (run.state === 'idle') return;
     log({ type: 'stop', elapsed: Math.round(elapsedMs()) });
     run.state = 'idle';
+    run.mode = 'intervals';
     cancelSounds(false);
+    stopSpeech();
     stopKeepAlive();
     releaseWakeLock();
     clearMediaSession();
     showSetup();
   }
   function finishSession() {
+    var workout = run.mode === 'workout';
     run.pausedElapsed = run.totalMs;
     run.state = 'done';
     log({ type: 'end', elapsed: Math.round(run.totalMs) });
     flash(true);
+    if (workout) speak('Done');
     releaseWakeLock();
     setTimeout(function () { if (run.state === 'done' || run.state === 'idle') stopKeepAlive(); }, 7000);
     clearMediaSession();
     render();
+  }
+
+  function cueRank(kind) {
+    if (kind === 'step') return 0;
+    if (kind === 'warn') return 2;
+    if (kind === 'end') return 3;
+    return 1;
+  }
+  function buildWorkoutCues() {
+    run.cues = [];
+    var t = 0;
+    for (var i = 0; i < run.steps.length; i++) {
+      var dur = run.steps[i].seconds * 1000;
+      run.cues.push({ t: t, kind: 'step', step: i, phase: run.steps[i].kind, noChime: i === 0 });
+      var m = 60000;
+      while (m < dur - 250) {
+        run.cues.push({ t: t + m, kind: 'minute', step: i, phase: 'minute' });
+        m += 60000;
+      }
+      if (dur >= 20000) {
+        var warnAt = dur - 10000;
+        if (warnAt >= 8000) run.cues.push({ t: t + warnAt, kind: 'warn', step: i, phase: 'warn' });
+      }
+      t += dur;
+    }
+    run.cues.push({ t: t, kind: 'end', phase: 'end' });
+    run.cues.sort(function (a, b) {
+      if (a.t !== b.t) return a.t - b.t;
+      return cueRank(a.kind) - cueRank(b.kind);
+    });
+  }
+  function workoutAt(el) {
+    var steps = run.steps || [];
+    var t = 0;
+    var clamped = Math.max(0, el);
+    for (var i = 0; i < steps.length; i++) {
+      var dur = steps[i].seconds * 1000;
+      if (clamped < t + dur || i === steps.length - 1) {
+        return { index: i, stepStart: t, stepEnd: t + dur, step: steps[i] };
+      }
+      t += dur;
+    }
+    return { index: 0, stepStart: 0, stepEnd: 0, step: null };
+  }
+  function fireWorkoutCues(el) {
+    var flashed = false;
+    while (run.firedIdx < run.cues.length) {
+      var cue = run.cues[run.firedIdx];
+      if (!cue || cue.kind === 'end' || cue.t > el) break;
+      run.firedIdx++;
+      if (cue.kind === 'step') {
+        cue.noChime = true;
+        flashed = true;
+        if (run.announcedStep !== cue.step) {
+          run.announcedStep = cue.step;
+          speak(run.steps[cue.step].speak);
+        }
+        log({ type: 'chime', k: cue.step + 1, expected: cue.t, elapsed: Math.round(el), missed: 0, phase: run.steps[cue.step].kind });
+      } else if (cue.kind === 'minute') {
+        flashed = true;
+        log({ type: 'chime', k: cue.step + 1, expected: cue.t, elapsed: Math.round(el), missed: 0, phase: 'minute' });
+      } else if (cue.kind === 'warn') {
+        speak('10 seconds');
+        log({ type: 'warn', t: cue.t, elapsed: Math.round(el), text: '10 seconds' });
+      }
+    }
+    if (flashed) {
+      flash(false);
+      if (navigator.vibrate) { try { navigator.vibrate(200); } catch (e) {} }
+      updateMediaSession();
+    }
+  }
+  function copyWorkoutSteps(source) {
+    var steps = [];
+    var totalSec = 0;
+    for (var i = 0; i < source.length; i++) {
+      var src = source[i];
+      if (!(src.seconds > 0)) return null;
+      steps.push({ block: src.block, name: src.name, cue: src.cue, seconds: src.seconds, kind: src.kind, speak: src.speak });
+      totalSec += src.seconds;
+    }
+    if (!(totalSec > 0)) return null;
+    return { steps: steps, totalSec: totalSec };
+  }
+  function startWorkout(again) {
+    var source = again ? run.steps : (workoutPlan && workoutPlan.steps);
+    if (!source || !source.length) return;
+    if (!again && (!workoutPlan || !workoutPlan.ok)) return;
+    if (run.state === 'running' || run.state === 'paused') return;
+    var copied = copyWorkoutSteps(source);
+    if (!copied) return;
+    ensureAudio();
+    startKeepAlive();
+    unlockSpeech();
+    run.mode = 'workout';
+    run.steps = copied.steps;
+    run.workMs = copied.steps[0].seconds * 1000;
+    run.restMs = 0;
+    run.totalMs = copied.totalSec * 1000;
+    run.leadIn = !!settings.leadIn;
+    run.announcedStep = 0;
+    buildWorkoutCues();
+    run.firedIdx = 0;
+    run.schedIdx = 0;
+    run.pausedElapsed = 0;
+    run.startPerf = now() + 60;
+    run.lastTickPerf = now();
+    run.lastTickWall = Date.now();
+    run.state = 'running';
+    cancelSounds(false);
+    if (ctx) playChime(ctx.currentTime + 0.03);
+    speak(copied.steps[0].speak);
+    scheduleAhead();
+    log({ type: 'start-workout', steps: copied.steps.length, totalMs: run.totalMs });
+    showRun();
+    requestWakeLock();
+    updateMediaSession();
+    loop();
+  }
+  function consumeCuesThrough(t) {
+    while (run.firedIdx < run.cues.length) {
+      var cue = run.cues[run.firedIdx];
+      if (!cue || cue.kind === 'end' || cue.t > t) break;
+      if (cue.kind === 'step') cue.noChime = true;
+      run.firedIdx++;
+    }
+  }
+  function endWorkoutNow() {
+    if (run.mode !== 'workout' || run.state === 'done' || run.state === 'idle') return;
+    cancelSounds(false);
+    ensureAudio();
+    if (ctx) playEnd(ctx.currentTime + 0.03);
+    run.pausedElapsed = run.totalMs;
+    run.startPerf = now() - run.totalMs;
+    finishSession();
+  }
+  function skipStep() {
+    if (run.mode !== 'workout') return;
+    if (run.state !== 'running' && run.state !== 'paused') return;
+    var info = workoutAt(elapsedMs());
+    if (!info.step) return;
+    if (info.index >= run.steps.length - 1 || info.stepEnd >= run.totalMs - 1) {
+      endWorkoutNow();
+      return;
+    }
+    var nextStart = info.stepEnd;
+    var nextIndex = info.index + 1;
+    if (run.state === 'running') run.startPerf = now() - nextStart;
+    else run.pausedElapsed = nextStart;
+    cancelSounds(false);
+    consumeCuesThrough(nextStart);
+    run.announcedStep = nextIndex;
+    ensureAudio();
+    if (run.state === 'running') startKeepAlive();
+    if (ctx) playChime(ctx.currentTime + 0.03);
+    speak(run.steps[nextIndex].speak);
+    if (run.state === 'running') {
+      rewindSched(nextStart);
+      scheduleAhead();
+    }
+    flash(false);
+    if (navigator.vibrate) { try { navigator.vibrate(120); } catch (e) {} }
+    log({ type: 'skip', step: nextIndex, elapsed: Math.round(nextStart) });
+    render();
+    updateMediaSession();
   }
 
   var rafId = 0, timerId = 0;
@@ -469,19 +1019,23 @@
 
     var el = elapsedMs();
     extendCues(el + 1000);
-    var newly = 0, lastT = 0, lastPhase = '';
-    while (run.firedIdx < run.cues.length) {
-      var cue = run.cues[run.firedIdx];
-      if (!cue || cue.kind === 'end' || cue.t > el) break;
-      lastT = cue.t; lastPhase = cue.phase;
-      run.firedIdx++;
-      newly++;
-    }
-    if (newly) {
-      log({ type: 'chime', k: run.firedIdx, expected: lastT, elapsed: Math.round(el), missed: newly - 1, phase: lastPhase });
-      flash(false);
-      if (navigator.vibrate) { try { navigator.vibrate(200); } catch (e) {} }
-      updateMediaSession();
+    if (run.mode === 'workout') {
+      fireWorkoutCues(el);
+    } else {
+      var newly = 0, lastT = 0, lastPhase = '';
+      while (run.firedIdx < run.cues.length) {
+        var cue = run.cues[run.firedIdx];
+        if (!cue || cue.kind === 'end' || cue.t > el) break;
+        lastT = cue.t; lastPhase = cue.phase;
+        run.firedIdx++;
+        newly++;
+      }
+      if (newly) {
+        log({ type: 'chime', k: run.firedIdx, expected: lastT, elapsed: Math.round(el), missed: newly - 1, phase: lastPhase });
+        flash(false);
+        if (navigator.vibrate) { try { navigator.vibrate(200); } catch (e) {} }
+        updateMediaSession();
+      }
     }
     scheduleAhead();
     if (isFinite(run.totalMs) && el >= run.totalMs) { finishSession(); return; }
@@ -820,10 +1374,63 @@
     render();
   }
 
+  function workoutKind(el) {
+    var info = workoutAt(el);
+    return info.step ? info.step.kind : 'work';
+  }
+  function renderWorkout(el, done) {
+    ui.run.classList.toggle('paused', run.state === 'paused');
+    ui.run.classList.toggle('done', done);
+    ui.run.classList.toggle('phase-work', !done && workoutKind(el) !== 'rest');
+    ui.run.classList.toggle('phase-rest', !done && workoutKind(el) === 'rest');
+    ui.controls.hidden = done;
+    ui.doneControls.hidden = !done;
+    if (done) {
+      setText(ui.interval, 'int', 'Workout complete');
+      setText(ui.label, 'lbl', run.steps.length + (run.steps.length === 1 ? ' step' : ' steps'));
+      setText(ui.every, 'every', fmt(run.totalMs / 1000));
+      setText(ui.count, 'cnt', 'Done');
+      setText(ui.elapsed, 'el', fmt(run.totalMs / 1000));
+      setText(ui.remaining, 'rem', '0:00');
+      setWidth(ui.ibar, 'ib', 100);
+      setWidth(ui.tbar, 'tb', 100);
+      ui.tbarWrap.hidden = false;
+      document.title = 'Done · Interval Chime';
+      return;
+    }
+    var info = workoutAt(Math.min(el, Math.max(0, run.totalMs - 1)));
+    var step = info.step;
+    if (!step) return;
+    var toNext = Math.max(0, info.stepEnd - el);
+    var cdTxt = fmt(Math.ceil(toNext / 1000 - 1e-6));
+    var sub = '';
+    if (step.cue && step.block && step.block !== step.name) sub = step.block + ' · ' + step.cue;
+    else if (step.cue) sub = step.cue;
+    else if (step.block && step.block !== step.name) sub = step.block;
+    setText(ui.interval, 'int', step.name);
+    setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : ('Step ' + (info.index + 1) + ' of ' + run.steps.length));
+    setText(ui.every, 'every', sub);
+    setText(ui.count, 'cnt', cdTxt);
+    setText(ui.elapsed, 'el', fmt(el / 1000));
+    setText(ui.remaining, 'rem', fmt(Math.ceil(Math.max(0, run.totalMs - el) / 1000 - 1e-6)));
+    var segLen = info.stepEnd - info.stepStart;
+    setWidth(ui.ibar, 'ib', segLen > 0 ? Math.min(100, Math.max(0, (el - info.stepStart) / segLen * 100)) : 0);
+    ui.tbarWrap.hidden = false;
+    setWidth(ui.tbar, 'tb', run.totalMs > 0 ? Math.min(100, el / run.totalMs * 100) : 0);
+    setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
+    document.title = cdTxt + ' · ' + step.name;
+  }
   function render() {
     if (ui.run.hidden) return;
     var el = Math.max(0, elapsedMs());
     var done = run.state === 'done';
+    var isWorkout = run.mode === 'workout';
+    ui.run.classList.toggle('workout', isWorkout);
+    if (ui.skip) {
+      ui.skip.hidden = !(isWorkout && !done);
+      ui.controls.classList.toggle('has-skip', isWorkout && !done);
+    }
+    if (isWorkout) { renderWorkout(el, done); return; }
     var info = phaseAt(done ? run.totalMs : el);
     ui.run.classList.toggle('paused', run.state === 'paused');
     ui.run.classList.toggle('done', done);
@@ -905,20 +1512,37 @@
   function updateMediaSession() {
     if (!('mediaSession' in navigator) || !settings.override) return;
     try {
-      var info = phaseAt(elapsedMs());
+      var title, artist;
+      if (run.mode === 'workout' && run.steps && run.steps.length) {
+        var w = workoutAt(elapsedMs());
+        title = w.step ? w.step.name : 'Workout';
+        artist = (w.step && (w.step.cue || w.step.block)) || 'Interval Chime';
+        if (artist.length > 120) artist = artist.slice(0, 117) + '...';
+      } else {
+        var info = phaseAt(elapsedMs());
+        title = info.inWork ? 'Work' : 'Rest';
+        artist = 'Round ' + info.roundNum + (isFinite(info.rounds) ? ' of ' + info.rounds : '') + ' · ' + fmt(run.workMs / 1000) + ' / ' + fmt(run.restMs / 1000);
+      }
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: info.inWork ? 'Work' : 'Rest',
-        artist: 'Round ' + info.roundNum + (isFinite(info.rounds) ? ' of ' + info.rounds : '') + ' · ' + fmt(run.workMs / 1000) + ' / ' + fmt(run.restMs / 1000),
+        title: title,
+        artist: artist,
         artwork: [{ src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' }]
       });
       navigator.mediaSession.playbackState = run.state === 'running' ? 'playing' : 'paused';
       navigator.mediaSession.setActionHandler('play', function () { resumeSession(); });
       navigator.mediaSession.setActionHandler('pause', function () { pauseSession(); });
+      try {
+        navigator.mediaSession.setActionHandler('nexttrack', run.mode === 'workout' ? function () { skipStep(); } : null);
+      } catch (e2) { /* ignore */ }
     } catch (e) { /* ignore */ }
   }
   function clearMediaSession() {
     if (!('mediaSession' in navigator)) return;
-    try { navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; } catch (e) {}
+    try {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+      navigator.mediaSession.setActionHandler('nexttrack', null);
+    } catch (e) {}
   }
 
   function init() {
@@ -933,8 +1557,9 @@
     ui.interval = $('r-interval'); ui.every = $('r-every'); ui.label = $('r-label'); ui.count = $('r-count');
     ui.ibar = $('r-ibar'); ui.tbar = $('r-tbar'); ui.tbarWrap = $('r-tbar-wrap');
     ui.elapsed = $('r-elapsed'); ui.remaining = $('r-remaining');
-    ui.pause = $('btn-pause'); ui.stop = $('btn-stop'); ui.controls = ui.pause.parentNode;
+    ui.pause = $('btn-pause'); ui.skip = $('btn-skip'); ui.stop = $('btn-stop'); ui.controls = ui.pause.parentNode;
     ui.doneControls = $('done-controls'); ui.wake = $('r-wake'); ui.audioBanner = $('audio-banner');
+    ui.workoutText = $('workout-text'); ui.workoutPreview = $('workout-preview'); ui.workoutStart = $('btn-start-workout');
     if (TEST) $('test-badge').hidden = false;
 
     bindWheel(ui.workCol); bindWheel(ui.restCol); bindWheel(ui.totalCol);
@@ -981,8 +1606,16 @@
       ui.stop.classList.add('confirm'); ui.stop.textContent = 'Tap to stop';
       stopArm = setTimeout(function () { ui.stop.classList.remove('confirm'); ui.stop.textContent = 'Stop'; }, 3000);
     });
-    $('btn-again').addEventListener('click', function () { run.state = 'idle'; startSession(); });
+    $('btn-again').addEventListener('click', function () {
+      var againWorkout = run.mode === 'workout' && run.steps && run.steps.length;
+      run.state = 'idle';
+      if (againWorkout) startWorkout(true);
+      else startSession();
+    });
     $('btn-back').addEventListener('click', function () { run.state = 'done'; stopSession(); });
+    ui.workoutText.addEventListener('input', onWorkoutInput);
+    ui.workoutStart.addEventListener('click', function () { startWorkout(false); });
+    ui.skip.addEventListener('click', skipStep);
     $('btn-audio-fix').addEventListener('click', function () { ensureAudio(); startKeepAlive(); setTimeout(checkAudioBanner, 300); });
 
     window.addEventListener('resize', function () { if (!ui.setup.hidden) renderWheels(); });
@@ -999,15 +1632,29 @@
   window.__chime = {
     log: testLog,
     state: function () {
-      var info = phaseAt(elapsedMs());
+      var el = elapsedMs();
+      var info = run.mode === 'workout' ? null : phaseAt(el);
+      var winfo = run.mode === 'workout' ? workoutAt(el) : null;
       return {
-        state: run.state, elapsed: Math.round(elapsedMs()), firedIdx: run.firedIdx, schedIdx: run.schedIdx,
+        state: run.state, elapsed: Math.round(el), firedIdx: run.firedIdx, schedIdx: run.schedIdx,
         workMs: run.workMs, restMs: run.restMs, totalMs: isFinite(run.totalMs) ? run.totalMs : null,
-        phase: run.state === 'done' ? 'done' : (info.inWork ? 'work' : 'rest'),
+        phase: run.state === 'done' ? 'done' : (run.mode === 'workout'
+          ? (winfo && winfo.step ? winfo.step.kind : 'work')
+          : (info.inWork ? 'work' : 'rest')),
+        mode: run.mode || 'intervals',
+        stepIndex: winfo ? winfo.index : null,
+        stepName: winfo && winfo.step ? winfo.step.name : null,
+        stepCount: run.mode === 'workout' && run.steps ? run.steps.length : null,
         ctxState: ctx && ctx.state, ctxTime: ctx && ctx.currentTime, pendingEvents: events.length, wakeLock: !!wakeLock
       };
     },
-    settings: function () { return JSON.parse(JSON.stringify(settings)); }
+    settings: function () { return JSON.parse(JSON.stringify(settings)); },
+    parseWorkout: parseWorkout,
+    workoutCues: function () {
+      return (run.cues || []).map(function (c) {
+        return { t: c.t, kind: c.kind, step: c.step == null ? null : c.step, noChime: !!c.noChime };
+      });
+    }
   };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

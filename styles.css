@@ -200,6 +200,47 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .vol label { font-size: 18px; }
 .vol input[type=range] { flex: 1; min-width: 120px; height: 40px; accent-color: var(--accent); }
 
+#workout-text {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  margin: 0;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--panel2);
+  border: 2px solid var(--line);
+  border-radius: 14px;
+  touch-action: pan-y;
+}
+#workout-text:focus { border-color: var(--accent); outline: none; }
+#btn-start-workout { margin-top: 4px; }
+.workout-total { margin-top: 12px; }
+.wk-block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  margin: 8px 0;
+  overflow-wrap: break-word;
+}
+.wk-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-weight: 750; font-size: 18px; }
+.wk-head .tm, .wk-sub .tm { flex: none; font-variant-numeric: tabular-nums; color: var(--dim); font-weight: 650; }
+.wk-cue { color: var(--dim); font-size: 14.5px; line-height: 1.35; margin-top: 4px; }
+.wk-warn { color: var(--accent); font-size: 14px; line-height: 1.35; margin-top: 4px; }
+.wk-sub { list-style: none; margin: 6px 0 0; padding: 0; }
+.wk-sub li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 15px; }
+.wk-block.bad { border-color: var(--danger); }
+.wk-block .why { color: #ffb3b5; font-size: 14.5px; line-height: 1.35; }
+.controls.has-skip { grid-template-columns: 1.25fr 0.8fr 1fr; }
+.controls.has-skip .btn.huge { font-size: 22px; min-height: 72px; padding: 8px 6px; }
+.controls.has-skip .btn.danger.confirm { font-size: 16px; }
+#run.workout .r-interval { font-size: 26px; line-height: 1.15; padding: 0 6px; overflow-wrap: break-word; }
+#run.workout .r-every { font-size: 16px; line-height: 1.35; padding: 0 8px; overflow-wrap: break-word; }
+
 .note { color: var(--dim); font-size: 14.5px; line-height: 1.4; margin: 12px 2px; }
 .note.dim { opacity: .75; font-size: 13px; }
 .note.small { font-size: 13px; text-align: center; }
