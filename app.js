@@ -281,6 +281,7 @@
   // ---------- pasted workout ----------
   var MAX_BLOCK_S = 6 * 3600;
   var DUR_SRC = '(\\d+:\\d{1,2}(?::\\d{2})?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s))';
+  var NAME_DUR_RE = new RegExp('^(.+?)\\s*[,\\-]\\s*' + DUR_SRC + '\\s*$', 'i');
   var REST_PATTERNS = [
     /rest(?:ing)?\s+(.+?)\s+after\s+(?:each|every)\s+(.+?)(?=[.]|$)/i,
     /(.+?)\s+rest\s+after\s+(?:each|every)\s+(.+?)(?=[.]|$)/i
@@ -326,15 +327,20 @@
     line = line.replace(/\*\*|__/g, '').replace(/\*/g, '').trim();
     return line;
   }
-  function splitHeaderCue(line) {
-    for (var i = 0; i < line.length; i++) {
-      if (line.charAt(i) !== ':') continue;
-      var prev = i > 0 ? line.charAt(i - 1) : '';
-      var next = i + 1 < line.length ? line.charAt(i + 1) : '';
+  function indexOfCueColon(s, from) {
+    for (var k = from; k < s.length; k++) {
+      if (s.charAt(k) !== ':') continue;
+      var prev = k > 0 ? s.charAt(k - 1) : '';
+      var next = k + 1 < s.length ? s.charAt(k + 1) : '';
       if (/[0-9]/.test(prev) && /[0-9]/.test(next)) continue;
-      return { header: line.slice(0, i).trim(), cue: line.slice(i + 1).trim() };
+      return k;
     }
-    return { header: line.trim(), cue: '' };
+    return -1;
+  }
+  function splitHeaderCue(line) {
+    var i = indexOfCueColon(line, 0);
+    if (i < 0) return { header: line.trim(), cue: '' };
+    return { header: line.slice(0, i).trim(), cue: line.slice(i + 1).trim() };
   }
   function headerHasDuration(header) {
     var h = String(header || '').replace(/[.]+$/g, '').trim();
@@ -619,9 +625,104 @@
     for (i = 0; i < steps.length; i++) seconds += steps[i].seconds;
     return { name: parsed.name, cue: parsed.cue, seconds: seconds, warning: parsed.warning || '', steps: steps };
   }
+  function cleanedHeader(raw) {
+    return cleanLine(raw).replace(/[.]+$/g, '').trim();
+  }
+  function hasSentencePunct(header) {
+    return /[.!?]/.test(String(header || '').replace(/\d+\.\d+/g, ''));
+  }
+  function commaOrDashDuration(header) {
+    var m = String(header || '').match(NAME_DUR_RE);
+    if (!m) return false;
+    var name = cleanName(m[1]);
+    return !!(name && nameOk(name) && parseDurationToken(m[2]));
+  }
+  // A header we can see even in the middle of a sentence: "Name, 5 min",
+  // "Name (5 min)", rounds, Nx, or on/off-for. Space-only "Name 5 min" is
+  // included when it is already at a line start or right after .!? so a
+  // collapsed paste still splits, without treating a duration inside a cue
+  // ("20s on/10s off", "rest 10 seconds after each") as the next step.
+  function strongStepHeader(header) {
+    var split = stripTrailingParen(header);
+    if (takeRounds(split.main, split.paren)) return true;
+    if (!split.paren && takeRounds(header, '')) return true;
+    if (parseOnOffFor(split.main)) return true;
+    if (!split.paren && parseOnOffFor(header)) return true;
+    if (split.paren && parseDurationToken(split.paren)) {
+      var parenName = cleanName(split.main);
+      if (parenName && nameOk(parenName)) return true;
+    }
+    return commaOrDashDuration(header);
+  }
+  function atWordStart(s, i) {
+    if (i < 0 || i >= s.length) return false;
+    var c = s.charAt(i);
+    if (c === ' ' || c === '\t' || c === '\n') return false;
+    if (i === 0) return true;
+    return !/[A-Za-z0-9]/.test(s.charAt(i - 1));
+  }
+  function isAtLineStart(s, i) {
+    var j = i;
+    while (j > 0 && (s.charAt(j - 1) === ' ' || s.charAt(j - 1) === '\t')) j--;
+    return j === 0 || s.charAt(j - 1) === '\n';
+  }
+  function followsSentenceEnd(s, i) {
+    var j = i - 1;
+    while (j >= 0 && (s.charAt(j) === ' ' || s.charAt(j) === '\t')) j--;
+    if (j < 0) return false;
+    var c = s.charAt(j);
+    return c === '.' || c === '!' || c === '?';
+  }
+  function acceptsStepHeader(raw, s, i) {
+    var header = cleanedHeader(raw);
+    if (!header || header.length > 120 || hasSentencePunct(header)) return false;
+    if (strongStepHeader(header)) return true;
+    if (!(followsSentenceEnd(s, i) || isAtLineStart(s, i))) return false;
+    return headerHasDuration(header);
+  }
+  function findStepHeader(s, from) {
+    for (var i = from; i < s.length; i++) {
+      if (!atWordStart(s, i)) continue;
+      var colon = indexOfCueColon(s, i);
+      if (colon < 0) return null;
+      var raw = s.slice(i, colon);
+      if (raw.indexOf('\n') !== -1 || raw.length > 160) continue;
+      if (acceptsStepHeader(raw, s, i)) return { start: i, colon: colon };
+    }
+    return null;
+  }
+  // Pasted chat messages sometimes lose line breaks, including the space after
+  // a period ("worse.Rings, 3 min:"). Break before each step header so the
+  // next line's duration is not parsed as part of this step's cue.
+  function breakBeforeStepHeaders(s) {
+    var cuts = [];
+    var i = 0;
+    var guard = 0;
+    var found, next, n, at;
+    while (i < s.length && guard++ < 400) {
+      found = findStepHeader(s, i);
+      if (!found || found.start < i || found.colon < found.start) break;
+      if (!isAtLineStart(s, found.start)) cuts.push(found.start);
+      next = found.colon + 1;
+      if (next <= i) break;
+      i = next;
+    }
+    for (n = cuts.length - 1; n >= 0; n--) {
+      at = cuts[n];
+      s = s.slice(0, at) + '\n' + s.slice(at);
+    }
+    return s;
+  }
+  function prepareWorkoutText(text) {
+    var s = String(text || '').replace(/^\uFEFF/, '');
+    s = s.replace(/\u2028/g, '\n').replace(/\u2029/g, '\n');
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    s = s.replace(/\u00A0/g, ' ');
+    return breakBeforeStepHeaders(s);
+  }
   function parseWorkout(text) {
     var blocks = [], steps = [], errors = [];
-    var lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    var lines = prepareWorkoutText(text).split('\n');
     for (var i = 0; i < lines.length; i++) {
       if (!String(lines[i] || '').trim()) continue;
       if (blocks.length >= 200) break;

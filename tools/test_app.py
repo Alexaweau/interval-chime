@@ -442,6 +442,90 @@ with sync_playwright() as p:
           and all("Warm" not in s["name"] and "Tell" not in s["name"] for s in vsteps),
           [(s["name"], s["seconds"], s["speak"]) for s in vsteps])
 
+    # iOS paste of this coach message drops some line breaks, so step headers
+    # sit against the previous sentence ("worse.Rings, 3 min:").
+    SAMPLE = "\n".join([
+        "Here is your 30-minute session. Copy the plan as it is, paste it into the app, and push Start. Rope goes up to 5 minutes today, so I removed the finisher to keep the total at 30:00.",
+        "Rope, 5 min: Keep it light. Stop if the Achilles feels sharp or worse.Rings, 3 min: Do the reverse-grip hang with a tennis ball in each hand.Bag, 6 rounds of 2:00 on, 1:00 off (18 min): Use jab-cross-hook. In rounds 5 and 6, push the pace.Cool-down, 4 min: Walk, then stretch your calves and hip flexors. Do not skip the cool-down.",
+        "Tell me when you finish, and tell me how the Achilles felt on 5 minutes of rope.",
+    ]) + "\n"
+
+    def collapsed_problem(plan, allow_closing_in_cue=False):
+        if plan["ok"] is not True or plan["errors"] != [] or plan["totalSeconds"] != 1800:
+            return ("plan", plan["ok"], plan["totalSeconds"], plan["errors"])
+        blocks = plan["blocks"]
+        got_b = [(b["name"], b["seconds"], len(b["steps"])) for b in blocks]
+        expect_b = [("Rope", 300, 1), ("Rings", 180, 1), ("Bag", 1080, 12), ("Cool-down", 240, 1)]
+        if got_b != expect_b:
+            return ("blocks", got_b)
+        steps = plan["steps"]
+        if len(steps) != 15 or sum(s["seconds"] for s in steps) != 1800:
+            return ("len", len(steps), [(s["name"], s["seconds"]) for s in steps])
+        if any(s["name"] in ("Tell", "Here", "Finisher", "Work") or "minute" in s["name"].lower() or "session" in s["name"].lower() for s in steps):
+            return ("prose", [s["name"] for s in steps])
+        rope, rings, bag, cool = blocks
+        if rope["steps"][0]["kind"] != "work" or "Rings" in rope["cue"] or "2:00" in rope["cue"] or not rope["cue"].startswith("Keep it light"):
+            return ("rope", rope["cue"], rope["steps"])
+        if rings["steps"][0]["kind"] != "work" or "Bag" in rings["cue"] or "reverse-grip" not in rings["cue"]:
+            return ("rings", rings["cue"])
+        if "jab-cross-hook" not in bag["cue"] or "push the pace" not in bag["cue"] or "Cool-down" in bag["cue"]:
+            return ("bag-cue", bag["cue"])
+        if "30-minute" in rope["cue"] or "5 minutes today" in rope["cue"]:
+            return ("intro-in-rope", rope["cue"])
+        if not cool["cue"].startswith("Walk, then stretch"):
+            return ("cool", cool["cue"])
+        if not allow_closing_in_cue and "Tell me" in cool["cue"]:
+            return ("closing", cool["cue"])
+        for i, st in enumerate(bag["steps"]):
+            if i % 2 == 0:
+                n = i // 2 + 1
+                speak = "Round %d, push the pace" % n if n >= 5 else "Round %d" % n
+                if (st["name"], st["seconds"], st["kind"], st["speak"]) != ("Round %d of 6, work" % n, 120, "work", speak):
+                    return ("round", i, st["name"], st["seconds"], st["kind"], st["speak"])
+            elif (st["name"], st["seconds"], st["kind"], st["speak"]) != ("Rest", 60, "rest", "Rest"):
+                return ("rest", i, st["name"], st["seconds"], st["speak"])
+        return None
+
+    def collapsed_detail(plan, problem):
+        if problem is None:
+            return ""
+        return (problem, [(b["name"], b["seconds"]) for b in plan["blocks"]], plan["totalSeconds"])
+
+    exact = page.evaluate("(t) => window.__chime.parseWorkout(t)", SAMPLE)
+    check("collapsed newlines: exact paste is 4 sections and 30:00",
+          collapsed_problem(exact) is None, collapsed_detail(exact, collapsed_problem(exact)))
+    no_breaks = page.evaluate("(t) => window.__chime.parseWorkout(t)", SAMPLE.replace("\n", ""))
+    check("collapsed newlines: all line breaks removed",
+          collapsed_problem(no_breaks, True) is None, collapsed_detail(no_breaks, collapsed_problem(no_breaks, True)))
+    spaced = page.evaluate("(t) => window.__chime.parseWorkout(t)", SAMPLE.replace("\n", " "))
+    check("collapsed newlines: line breaks replaced by spaces",
+          collapsed_problem(spaced, True) is None, collapsed_detail(spaced, collapsed_problem(spaced, True)))
+    crlf = page.evaluate("(t) => window.__chime.parseWorkout(t)", SAMPLE.replace("\n", "\r\n"))
+    check("collapsed newlines: crlf line endings",
+          collapsed_problem(crlf) is None, collapsed_detail(crlf, collapsed_problem(crlf)))
+    uni_texts = [
+        SAMPLE.replace("\n", "\u2028"),
+        SAMPLE.replace("\n", "\u2029"),
+        SAMPLE.replace("\n", "\u2028", 1).replace("\n", "\u2029", 1),
+    ]
+    uni_problems = [collapsed_problem(page.evaluate("(t) => window.__chime.parseWorkout(t)", t)) for t in uni_texts]
+    check("collapsed newlines: unicode line separators U+2028 and U+2029",
+          all(p is None for p in uni_problems), uni_problems)
+
+    page.fill("#workout-text", SAMPLE)
+    page.wait_for_timeout(40)
+    collapsed_preview = page.inner_text("#workout-preview")
+    check("collapsed paste preview shows Rope, Rings, Bag, Cool-down and 30:00",
+          "15 steps · 30:00" in collapsed_preview and "3 steps" not in collapsed_preview
+          and "Rope" in collapsed_preview and "5:00" in collapsed_preview
+          and "Rings" in collapsed_preview and "3:00" in collapsed_preview
+          and "Bag" in collapsed_preview and "18:00" in collapsed_preview
+          and "Round 1 of 6, work" in collapsed_preview and "2:00" in collapsed_preview
+          and "Rest" in collapsed_preview and "1:00" in collapsed_preview
+          and "Cool-down" in collapsed_preview and "4:00" in collapsed_preview
+          and "30-minute session" not in collapsed_preview and "Tell me" not in collapsed_preview,
+          collapsed_preview[:700])
+
     page.fill("#workout-text", EXAMPLE)
     page.wait_for_timeout(60)
     preview = page.inner_text("#workout-preview")
