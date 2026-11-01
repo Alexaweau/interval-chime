@@ -1,5 +1,5 @@
 /* Interval Chime service worker: offline app shell, no network calls of its own. */
-var VERSION = 'interval-chime-v6';
+var VERSION = 'interval-chime-v7';
 var ASSETS = [
   './',
   './index.html',
@@ -29,6 +29,9 @@ self.addEventListener('fetch', function (e) {
   if (req.method !== 'GET' || req.headers.has('range')) return;
   var url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  // promo/ is a separate static demo. Do not cache it and do not answer its
+  // navigations with the app shell.
+  if (url.pathname.indexOf('/promo/') !== -1 || /\/promo\/?$/.test(url.pathname)) return;
   var isNav = req.mode === 'navigate';
   e.respondWith(caches.open(VERSION).then(function (cache) {
     var key = isNav ? './index.html' : req;
