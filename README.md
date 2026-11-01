@@ -1,6 +1,13 @@
 # Interval Chime
 
-A tiny, dependency-free interval timer for workouts. It's an installable PWA (works offline, no tracking).
+<p align="center">
+  <img src="promo/poster.png" alt="Interval Chime on an iPhone during a bag round, with the spoken cue Round 1" width="400">
+</p>
+<p align="center">
+  <img src="promo/demo.gif" alt="A coach's workout is pasted in, Start is tapped, and the timer chimes through Rope, Rings, Bag, and Cool-down" width="400">
+</p>
+
+A tiny, dependency-free interval timer for workouts. It's an installable PWA (works offline, no tracking). Paste a workout, tap Start, and each step chimes and is spoken. The loop above is a 12 second faux UI of that, built with [Stageshow](https://github.com/benjitaylor/skills/tree/main/stageshow). A looping MP4 is at [`promo/demo.mp4`](promo/demo.mp4), and the same demo plays at [`/promo/`](https://alexaweau.github.io/interval-chime/promo/).
 
 The main screen is one three-column wheel: work, rest, and total time. Defaults are 1:00 work, 0:30 rest, and 15:00 total (10 rounds). Changing either interval snaps the total to the nearest whole number of rounds — near 15 minutes until the total has been set, then near the total you set. The total column only lists whole rounds.
 
@@ -13,7 +20,7 @@ Below the fold: the old interval and session presets, custom lengths, lead-in be
 - Settings are saved in localStorage.
 
 ## Files
-`index.html`, `styles.css`, `app.js`, `sw.js`, `manifest.webmanifest`, `icons/` hold the whole app. No build step.
+`index.html`, `styles.css`, `app.js`, `sw.js`, `manifest.webmanifest`, `icons/` hold the whole app. No build step. `promo/` is a separate Stageshow page with its own build; the service worker does not cache it.
 `tools/` has the icon generator, the headless test (`python3 tools/test_app.py http://127.0.0.1:8765/`) and the deploy script.
 `?test=1` adds 2 s / 5 s work presets, 1-second wheel steps through 1:30, and 10 to 30 s sessions for quick testing.
 

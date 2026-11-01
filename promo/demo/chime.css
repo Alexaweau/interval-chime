@@ -1,0 +1,392 @@
+/* Interval Chime, scoped to this demo. Tokens are the app's own:
+   canvas #0b0d12, panel #161a22, field #1f2430, line #2a3040,
+   text #f3f5f9, dim #9aa3b5, amber #ffb020, rest #9dc8ff, danger #ff5a5f. */
+
+.ic .ss-stage {
+  --ss-text-strong: #f3f5f9;
+  --ss-text: #d5dbe6;
+  --ss-text-faint: #9aa3b5;
+  --ss-accent: #ffb020;
+  --ss-accent-text: #1a1203;
+  --ss-line: #2a3040;
+  --ss-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #eceae6;
+  color: #f3f5f9;
+}
+
+.ic .ic-wash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(62% 46% at 50% 0%, rgba(255, 176, 32, 0.09), transparent 70%);
+  pointer-events: none;
+}
+
+/* Pinned, bottom bleed. Same gutters as the phone-touch gold. */
+.ic .ic-phone {
+  position: absolute;
+  top: 48px;
+  left: 50px;
+}
+
+.ic .ss-stage[data-layout='compact'] .ic-phone {
+  top: 16px;
+  left: 16px;
+}
+
+.ic .ic-app,
+.ic .ic-app * {
+  box-sizing: border-box;
+}
+
+.ic .ic-app {
+  position: relative;
+  height: 100%;
+  background: #0b0d12;
+  color: #f3f5f9;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+.ic .ic-screens {
+  position: absolute;
+  inset: 0;
+  display: grid;
+}
+
+.ic .ic-paste,
+.ic .ic-run {
+  grid-area: 1 / 1;
+  min-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+
+.ic .ic-paste[data-on],
+.ic .ic-run[data-on] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ic .ic-run {
+  z-index: 1;
+}
+
+.ic .ss-stage[data-instant] .ic-paste,
+.ic .ss-stage[data-instant] .ic-run,
+.ic .ss-stage[data-instant] .ic-line {
+  transition: none;
+}
+
+/* The visible slice of the phone, not the full 874pt screen. The crop
+   takes the rest, so Start and the countdown stay whole. */
+.ic .ic-col {
+  display: flex;
+  flex-direction: column;
+  height: 588px;
+  padding: 12px 20px 0;
+}
+
+.ic .ic-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 136px;
+  padding: 12px 14px;
+  overflow: hidden;
+  background: #1f2430;
+  border: 2px solid #2a3040;
+  border-radius: 14px;
+}
+
+.ic .ic-placeholder {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  left: 14px;
+  color: #9aa3b5;
+  font-size: 16px;
+  line-height: 22px;
+  transition: opacity 0.2s ease;
+}
+
+.ic .ic-field[data-on] .ic-placeholder {
+  opacity: 0;
+}
+
+.ic .ic-lines {
+  position: relative;
+  display: grid;
+  gap: 2px;
+}
+
+.ic .ic-line {
+  display: block;
+  color: #f3f5f9;
+  font-size: 16px;
+  line-height: 22px;
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+
+.ic .ic-line[data-on] {
+  opacity: 1;
+}
+
+.ic .ic-plan {
+  margin-top: 12px;
+  overflow: hidden;
+  background: #161a22;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px #2a3040;
+  will-change: transform;
+}
+
+.ic .ic-plan:not([data-on]) {
+  background: transparent;
+  box-shadow: none;
+}
+
+.ic .ic-total {
+  padding: 10px 12px 2px;
+  color: #f3f5f9;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.ic .ic-start {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  flex: none;
+  height: 104px;
+  margin-top: 12px;
+  border-radius: 28px;
+  color: #1a1203;
+  font-size: 34px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+
+.ic .ic-start[data-on] {
+  opacity: 1;
+}
+
+.ic .ic-start::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: #ffb020;
+  transition: transform 0.12s ease;
+}
+
+.ic .ic-start[data-pressed]::before {
+  transform: scale(0.97);
+}
+
+.ic .ic-col--run {
+  gap: 0;
+}
+
+.ic .ic-name {
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 32px;
+}
+
+.ic .ic-sub {
+  margin-top: 2px;
+  color: #9aa3b5;
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.ic .ic-step {
+  margin-top: 14px;
+  color: #9aa3b5;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 20px;
+  text-transform: uppercase;
+}
+
+.ic .ic-count {
+  margin-top: 2px;
+  color: #ffb020;
+  font-size: 92px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 96px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  transition: color 0.2s ease;
+}
+
+.ic .ic-run[data-phase='rest'] .ic-count {
+  color: #9dc8ff;
+}
+
+.ic .ic-bar {
+  height: 10px;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #1f2430;
+  border-radius: 8px;
+}
+
+.ic .ic-bar--thin {
+  height: 6px;
+  margin-top: 10px;
+}
+
+.ic .ic-bar__fill {
+  display: block;
+  height: 100%;
+  background: #ffb020;
+  border-radius: inherit;
+  transition: width 0.45s cubic-bezier(0.45, 0, 0.1, 1), background-color 0.2s ease;
+}
+
+.ic .ic-run[data-phase='rest'] .ic-bar__fill {
+  background: #9dc8ff;
+}
+
+.ic .ic-bar__fill--alt,
+.ic .ic-run[data-phase='rest'] .ic-bar__fill--alt {
+  background: #6c8cff;
+}
+
+.ic .ic-voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin-top: 12px;
+  padding: 0 12px;
+  background: #161a22;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px #2a3040;
+  color: #ffb020;
+}
+
+.ic .ic-voice__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #f3f5f9;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.ic .ic-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ic .ic-stat {
+  padding: 12px;
+  text-align: left;
+  background: #161a22;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px #2a3040;
+}
+
+.ic .ic-stat__k {
+  display: block;
+  color: #9aa3b5;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+
+.ic .ic-stat__v {
+  display: block;
+  margin-top: 2px;
+  font-size: 26px;
+  font-weight: 800;
+  line-height: 30px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ic .ic-controls {
+  display: grid;
+  grid-template-columns: 1.05fr 0.85fr 1.2fr;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ic .ic-btn {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  height: 64px;
+  border-radius: 18px;
+  color: #f3f5f9;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ic .ic-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: #161a22;
+  box-shadow: inset 0 0 0 2px #2a3040;
+  transition: transform 0.12s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ic .ic-stop {
+  color: #ff5a5f;
+}
+
+.ic .ic-stop::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px #ff5a5f;
+}
+
+.ic .ic-stop[data-armed] {
+  color: #fff;
+}
+
+.ic .ic-stop[data-armed]::before {
+  background: #ff5a5f;
+  box-shadow: none;
+}
+
+.ic .ic-stop[data-pressed]::before {
+  transform: scale(0.97);
+}
+
+.ic .ic-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: #ffb020;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease-out;
+}
+
+.ic .ic-flash[data-on] {
+  opacity: 0.34;
+  transition: none;
+}
