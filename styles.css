@@ -38,6 +38,8 @@ button, input { font: inherit; color: inherit; }
 
 /* ---------- paste a workout, then start ---------- */
 .paste-top {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
   min-height: 100dvh;
   box-sizing: border-box;
@@ -45,13 +47,16 @@ button, input { font: inherit; color: inherit; }
   flex-direction: column;
   gap: 12px;
   padding: calc(22px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
+  overflow: hidden;
 }
 .paste-top #workout-text {
+  order: 1;
   flex: 1 1 auto;
-  min-height: 160px;
+  min-height: 120px;
   margin: 0;
 }
 .paste-top #btn-start-workout.huge {
+  order: 3;
   margin: 0;
   min-height: 120px;
   font-size: 40px;
@@ -61,15 +66,38 @@ button, input { font: inherit; color: inherit; }
   flex: none;
 }
 .paste-top #workout-preview {
-  flex: none;
-  max-height: 22vh;
+  order: 2;
+  flex: 0 1 auto;
+  max-height: 36vh;
   overflow: auto;
   margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 2px 0;
 }
-.paste-top .workout-total { margin: 0 0 8px; font-size: 15px; padding: 8px 10px; }
-.paste-top .wk-block { margin: 6px 0; padding: 8px 10px; }
-.paste-top .wk-head { font-size: 15px; }
-.paste-top .wk-cue, .paste-top .wk-warn, .paste-top .wk-sub li { font-size: 13px; }
+.paste-top .workout-total {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 16px;
+  font-weight: 750;
+  padding: 10px 14px 6px;
+}
+.paste-top .wk-block {
+  margin: 0;
+  padding: 9px 14px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+  animation: rise 0.28s ease both;
+}
+.paste-top .wk-block:last-child { border-bottom: 0; }
+.paste-top .wk-head { font-size: 17px; font-weight: 750; }
+.paste-top .wk-head .tm { color: var(--dim); font-variant-numeric: tabular-nums; }
+.paste-top .wk-cue, .paste-top .wk-warn, .paste-top .wk-sub li { font-size: 14px; }
 
 /* ---------- main: one wheel + start ---------- */
 .hero {
@@ -79,7 +107,19 @@ button, input { font: inherit; color: inherit; }
   display: flex;
   flex-direction: column;
   position: relative;
-  padding: calc(22px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
+  padding: calc(18px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
+}
+.wheel-labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 0 4px 8px;
+  color: var(--dim);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: center;
 }
 .wheel {
   position: relative;
@@ -241,16 +281,18 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   min-height: 132px;
   resize: none;
   margin: 0;
-  padding: 12px 14px;
+  padding: 14px 16px;
   font: inherit;
-  font-size: 16px;
-  line-height: 1.4;
+  font-size: 17px;
+  line-height: 1.45;
   color: var(--text);
   background: var(--panel2);
   border: 2px solid var(--line);
-  border-radius: 14px;
+  border-radius: 16px;
   touch-action: pan-y;
+  transition: border-color 0.15s ease;
 }
+#workout-text::placeholder { color: var(--dim); }
 #workout-text:focus { border-color: var(--accent); outline: none; }
 .workout-total { margin-top: 12px; }
 .wk-block {
@@ -280,37 +322,62 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .note.small { font-size: 13px; text-align: center; }
 
 /* ---------- running ---------- */
-#run { display: flex; flex-direction: column; gap: 14px; }
+#run {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  animation: rise 0.18s ease-out;
+}
 #run[hidden] { display: none; }
-.run-top { text-align: center; margin-top: 6px; }
-.r-interval { font-size: 30px; font-weight: 800; letter-spacing: -0.01em; }
-.r-every { color: var(--dim); font-size: 17px; margin-top: 2px; }
-.count-wrap { text-align: center; flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 260px; }
-.r-label { color: var(--dim); font-size: 18px; text-transform: uppercase; letter-spacing: .1em; font-weight: 650; }
+.run-top { text-align: center; margin-top: 4px; }
+.r-interval { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.15; }
+.r-every { color: var(--dim); font-size: 17px; margin-top: 4px; line-height: 1.35; }
+.count-wrap { text-align: center; flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 220px; }
+.r-label { color: var(--dim); font-size: 15px; text-transform: uppercase; letter-spacing: .12em; font-weight: 700; }
 .r-count {
-  font-size: clamp(96px, 30vw, 210px); line-height: 1; font-weight: 800; letter-spacing: -0.04em;
-  font-variant-numeric: tabular-nums; margin: 6px 0 14px; color: var(--accent);
+  font-size: clamp(104px, 32vw, 220px); line-height: 0.95; font-weight: 800; letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums; margin: 4px 0 12px; color: var(--accent);
+  transition: color 0.2s ease;
+}
+.r-next {
+  margin-top: 12px;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
 }
 .phase-rest .r-count { color: var(--rest); }
 .phase-rest .bar .fill { background: var(--rest); }
 .paused .r-count { color: var(--dim); animation: blink 1.4s steps(2, start) infinite; }
 .done .r-count { color: var(--ok); font-size: clamp(72px, 22vw, 150px); }
 @keyframes blink { to { opacity: .35; } }
-.bar { height: 14px; background: var(--panel2); border-radius: 10px; overflow: hidden; }
-.bar.thin { height: 8px; }
-.bar .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 10px; }
+.bar { height: 10px; background: var(--panel2); border-radius: 8px; overflow: hidden; }
+.bar.thin { height: 6px; }
+.bar .fill { height: 100%; width: 0%; background: var(--accent); border-radius: 8px; transition: width 0.45s cubic-bezier(0.45, 0, 0.1, 1), background-color 0.2s ease; }
 .bar .fill.alt { background: #6c8cff; }
 .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; text-align: center; }
 .stat .k { display: block; color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: .08em; font-weight: 650; }
 .stat .v { display: block; font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .controls { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+.controls .btn.huge { min-height: 84px; border-radius: 22px; }
+/* Thumb zone: the note sits just above the buttons, and the buttons are the last thing on the screen. */
+#run .status { order: 6; }
+#run .note { order: 7; margin-bottom: 0; }
+#run .controls { order: 8; }
 .status { text-align: center; color: var(--dim); font-size: 14px; margin: 0; }
 .banner { background: #3b2a00; border: 1px solid var(--accent); border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 15px; }
 
-.flash { position: fixed; inset: 0; background: var(--accent); opacity: 0; pointer-events: none; transition: opacity .6s ease-out; }
-.flash.on { opacity: .55; transition: none; }
+.flash { position: fixed; inset: 0; background: var(--accent); opacity: 0; pointer-events: none; transition: opacity .32s ease-out; }
+.flash.on { opacity: .28; transition: none; }
 .flash.end { background: var(--ok); }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
 
 @media (max-height: 700px) {
   .wheel { height: 288px; }
@@ -320,5 +387,6 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 }
 @media (prefers-reduced-motion: reduce) {
   .paused .r-count { animation: none; }
-  .flash { transition: none; }
+  .flash, .bar .fill, #workout-text, .btn { transition: none; }
+  #run, .paste-top .wk-block { animation: none; }
 }

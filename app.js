@@ -1495,6 +1495,11 @@
   var ui = {};
   var lastText = {};
   function setText(el, key, txt) { if (lastText[key] !== txt) { el.textContent = txt; lastText[key] = txt; } }
+  function setNext(text) {
+    if (!ui.next) return;
+    ui.next.hidden = !text;
+    setText(ui.next, 'next', text || '');
+  }
   function setWidth(el, key, pct) { var v = pct.toFixed(1) + '%'; if (lastText[key] !== v) { el.style.width = v; lastText[key] = v; } }
 
   function buildButtons(container, items, key, extra) {
@@ -1616,6 +1621,7 @@
       setWidth(ui.ibar, 'ib', 100);
       setWidth(ui.tbar, 'tb', 100);
       ui.tbarWrap.hidden = false;
+      setNext('');
       document.title = 'Done · Interval Chime';
       return;
     }
@@ -1639,6 +1645,8 @@
     ui.tbarWrap.hidden = false;
     setWidth(ui.tbar, 'tb', run.totalMs > 0 ? Math.min(100, el / run.totalMs * 100) : 0);
     setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
+    var nxt = run.steps[info.index + 1];
+    setNext(nxt ? ('Next · ' + nxt.name) : 'Last step');
     document.title = cdTxt + ' · ' + step.name;
   }
   function render() {
@@ -1670,6 +1678,7 @@
       setText(ui.remaining, 'rem', '0:00');
       setWidth(ui.ibar, 'ib', 100);
       setWidth(ui.tbar, 'tb', 100);
+      setNext('');
       document.title = 'Done · Interval Chime';
       return;
     }
@@ -1686,6 +1695,10 @@
     ui.tbarWrap.hidden = !isFinite(run.totalMs);
     if (isFinite(run.totalMs)) setWidth(ui.tbar, 'tb', Math.min(100, el / run.totalMs * 100));
     setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
+    var lastPhase = isFinite(run.totalMs) && info.phaseEnd >= run.totalMs - 1;
+    if (lastPhase) setNext('Last step');
+    else if (info.inWork) setNext('Next · Rest ' + fmt(run.restMs / 1000));
+    else setNext('Next · Work ' + fmt(run.workMs / 1000));
     document.title = cdTxt + ' · ' + (info.inWork ? 'Work' : 'Rest');
   }
 
@@ -1776,6 +1789,7 @@
     ui.leadIn = $('opt-leadin'); ui.override = $('opt-override'); ui.volume = $('opt-volume');
     ui.start = $('btn-start'); ui.test = $('btn-test');
     ui.interval = $('r-interval'); ui.every = $('r-every'); ui.label = $('r-label'); ui.count = $('r-count');
+    ui.next = $('r-next');
     ui.ibar = $('r-ibar'); ui.tbar = $('r-tbar'); ui.tbarWrap = $('r-tbar-wrap');
     ui.elapsed = $('r-elapsed'); ui.remaining = $('r-remaining');
     ui.pause = $('btn-pause'); ui.skip = $('btn-skip'); ui.stop = $('btn-stop'); ui.controls = ui.pause.parentNode;

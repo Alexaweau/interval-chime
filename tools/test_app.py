@@ -196,6 +196,8 @@ with sync_playwright() as p:
     check('default run: running, work phase, ctx running', st['state'] == 'running' and st['ctxState'] == 'running' and st['phase'] == 'work' and st['workMs'] == 60000 and st['restMs'] == 30000 and st['totalMs'] == 900000, st)
     cnt = page.inner_text('#r-count'); iv = page.inner_text('#r-interval'); lab = page.inner_text('#r-label')
     check('running screen shows work countdown and round 1 of 10', cnt in ('0:56', '0:57') and iv == 'Round 1 of 10' and lab == 'WORK', cnt + ' | ' + iv + ' | ' + lab)
+    nxt = page.inner_text('#r-next')
+    check('default run names the next phase', 'Rest' in nxt and '0:30' in nxt, nxt)
     sched = logs(page, ['sched-chime'])
     times = []
     seen = set()
@@ -569,6 +571,7 @@ with sync_playwright() as p:
     wake = page.inner_text("#r-wake")
     check("workout asks to keep the screen awake", wake.startswith("Screen:") and "…" not in wake, wake)
     check("workout screen shows the step", page.inner_text("#r-interval") == "Rope" and page.is_visible("#btn-skip"))
+    check("a single workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
     page.screenshot(path=os.path.join(SCREENS, "workout-running.png"))
     stop(page)
     page.wait_for_timeout(80)
@@ -580,6 +583,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(350)
     st = page.evaluate("window.__chime.state()")
     check("short workout is on Alpha", st["state"] == "running" and st["mode"] == "workout" and st["stepName"] == "Alpha" and page.inner_text("#r-interval") == "Alpha", st)
+    check("workout names the next step", page.inner_text("#r-next") == "Next · Beta", page.inner_text("#r-next"))
     check("pause and skip are available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-skip"))
     page.click("#btn-pause")
     e1 = page.evaluate("window.__chime.state()")
@@ -592,6 +596,7 @@ with sync_playwright() as p:
     st = page.evaluate("window.__chime.state()")
     skipped_speech = [e["text"] for e in logs(page, ["speak"])]
     check("skip advances to Beta and speaks it", st["stepName"] == "Beta" and page.inner_text("#r-interval") == "Beta" and any(t.startswith("Beta") for t in skipped_speech), (st["stepName"], skipped_speech))
+    check("the last workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
     stop(page)
     check("stop leaves the workout", page.is_visible("#setup") and page.evaluate("window.__chime.state().state") == "idle")
 
