@@ -1,5 +1,5 @@
 /* Interval Chime service worker: offline app shell, no network calls of its own. */
-var VERSION = 'interval-chime-v7';
+var VERSION = 'interval-chime-v8';
 var ASSETS = [
   './',
   './index.html',
