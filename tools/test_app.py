@@ -568,9 +568,11 @@ with sync_playwright() as p:
     check("minute chimes are scheduled on the audio clock", sched == [60000, 120000], sched)
     spoken = [e["text"] for e in logs(page, ["speak"])]
     check("start speaks the step name and cue", any("Rope" in t and "Easy pace" in t for t in spoken), spoken)
-    wake = page.inner_text("#r-wake")
-    check("workout asks to keep the screen awake", wake.startswith("Screen:") and "…" not in wake, wake)
-    check("workout screen shows the step", page.inner_text("#r-interval") == "Rope" and page.is_visible("#btn-skip"))
+    wake = page.text_content("#r-wake")
+    check("wake lock status is still tracked", wake.startswith("Screen:") and "…" not in wake, wake)
+    body = page.content().lower()
+    check("keep-open notes are gone", "keep the app open" not in body and "keep this app open" not in body and "may pause the chimes" not in body and "may pause chimes" not in body, "")
+    check("workout screen shows the step", page.inner_text("#r-interval") == "Rope")
     check("a single workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
     page.screenshot(path=os.path.join(SCREENS, "workout-running.png"))
     stop(page)
@@ -584,21 +586,49 @@ with sync_playwright() as p:
     st = page.evaluate("window.__chime.state()")
     check("short workout is on Alpha", st["state"] == "running" and st["mode"] == "workout" and st["stepName"] == "Alpha" and page.inner_text("#r-interval") == "Alpha", st)
     check("workout names the next step", page.inner_text("#r-next") == "Next · Beta", page.inner_text("#r-next"))
-    check("pause and skip are available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-skip"))
+    check("pause is available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-stop"))
     page.click("#btn-pause")
     e1 = page.evaluate("window.__chime.state()")
     page.wait_for_timeout(700)
     e2 = page.evaluate("window.__chime.state()")
     check("workout pause freezes the clock", e1["state"] == "paused" and page.inner_text("#btn-pause") == "Resume" and abs(e1["elapsed"] - e2["elapsed"]) <= 1, (e1["elapsed"], e2["elapsed"]))
     page.click("#btn-pause")
-    page.click("#btn-skip")
-    page.wait_for_timeout(200)
+    # Alpha is 8s and about 0.3s has already run; the clock reaches Beta on its own.
+    page.wait_for_timeout(8200)
     st = page.evaluate("window.__chime.state()")
-    skipped_speech = [e["text"] for e in logs(page, ["speak"])]
-    check("skip advances to Beta and speaks it", st["stepName"] == "Beta" and page.inner_text("#r-interval") == "Beta" and any(t.startswith("Beta") for t in skipped_speech), (st["stepName"], skipped_speech))
+    spoken_beta = [e["text"] for e in logs(page, ["speak"])]
+    check("the timer advances to Beta and speaks it", st["stepName"] == "Beta" and page.inner_text("#r-interval") == "Beta" and any(t.startswith("Beta") for t in spoken_beta), (st["stepName"], spoken_beta))
     check("the last workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
     stop(page)
     check("stop leaves the workout", page.is_visible("#setup") and page.evaluate("window.__chime.state().state") == "idle")
+
+    page.fill("#workout-text", "Dumbbell bench press, 4 rounds of 2 sec on, 2 sec off: Slow lower.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(2600)
+    rest1 = {
+        "label": page.inner_text("#r-label"),
+        "round": page.inner_text("#r-interval"),
+        "next": page.inner_text("#r-next"),
+        "count": page.inner_text("#r-count"),
+    }
+    check("first rest names the next round",
+          rest1["label"] == "REST" and rest1["round"] == "Round 1 of 4"
+          and rest1["next"] == "Next: Dumbbell bench press, round 2 of 4. Slow lower."
+          and rest1["count"].startswith("0:"),
+          rest1)
+    page.wait_for_timeout(4000)
+    rest2 = {
+        "label": page.inner_text("#r-label"),
+        "round": page.inner_text("#r-interval"),
+        "next": page.inner_text("#r-next"),
+    }
+    check("second rest names round 3 of 4",
+          rest2["label"] == "REST" and rest2["round"] == "Round 2 of 4"
+          and rest2["next"] == "Next: Dumbbell bench press, round 3 of 4. Slow lower.",
+          rest2)
+    stop(page)
+    page.wait_for_timeout(80)
 
     page.fill("#workout-text", "1. **Beep, 2 sec:** Go.")
     page.wait_for_timeout(40)

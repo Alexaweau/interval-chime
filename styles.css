@@ -311,9 +311,6 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .wk-sub li { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 15px; }
 .wk-block.bad { border-color: var(--danger); }
 .wk-block .why { color: #ffb3b5; font-size: 14.5px; line-height: 1.35; }
-.controls.has-skip { grid-template-columns: 1.25fr 0.8fr 1fr; }
-.controls.has-skip .btn.huge { font-size: 22px; min-height: 72px; padding: 8px 6px; }
-.controls.has-skip .btn.danger.confirm { font-size: 16px; }
 #run.workout .r-interval { font-size: 26px; line-height: 1.15; padding: 0 6px; overflow-wrap: break-word; }
 #run.workout .r-every { font-size: 16px; line-height: 1.35; padding: 0 8px; overflow-wrap: break-word; }
 
@@ -334,6 +331,10 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .run-top { text-align: center; margin-top: 4px; }
 .r-interval { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.15; }
 .r-every { color: var(--dim); font-size: 17px; margin-top: 4px; line-height: 1.35; }
+#run .r-every,
+#run .stats,
+#run #r-tbar-wrap,
+#run .status { display: none; }
 .count-wrap { text-align: center; flex: 1; display: flex; flex-direction: column; justify-content: center; min-height: 220px; }
 .r-label { color: var(--dim); font-size: 15px; text-transform: uppercase; letter-spacing: .12em; font-weight: 700; }
 .r-count {
@@ -351,6 +352,23 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 }
 .phase-rest .r-count { color: var(--rest); }
 .phase-rest .bar .fill { background: var(--rest); }
+#run.phase-rest .r-label {
+  font-size: clamp(48px, 14vw, 72px);
+  line-height: 1;
+  letter-spacing: 0.06em;
+  color: var(--rest);
+  margin: 8px 0 4px;
+}
+#run.phase-rest .r-interval { font-size: 22px; font-weight: 750; }
+#run.phase-rest .r-next {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.35;
+  max-width: 20em;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 8px;
+}
 .paused .r-count { color: var(--dim); animation: blink 1.4s steps(2, start) infinite; }
 .done .r-count { color: var(--ok); font-size: clamp(72px, 22vw, 150px); }
 @keyframes blink { to { opacity: .35; } }

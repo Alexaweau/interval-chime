@@ -1604,6 +1604,35 @@
     var info = workoutAt(el);
     return info.step ? info.step.kind : 'work';
   }
+  function roundBits(step) {
+    var m = String(step && step.name || '').match(/round\s+(\d+)\s+of\s+(\d+)/i);
+    return m ? { n: m[1], of: m[2] } : null;
+  }
+  function currentSetLabel(info) {
+    var step = info.step;
+    var bits = roundBits(step);
+    if (!bits && step && step.kind === 'rest' && info.index > 0) bits = roundBits(run.steps[info.index - 1]);
+    if (bits) return 'Round ' + bits.n + ' of ' + bits.of;
+    return 'Step ' + (info.index + 1) + ' of ' + run.steps.length;
+  }
+  // Rest shows the upcoming work: name, round, and cue. Display only.
+  function nextStepLine(step) {
+    if (!step) return '';
+    if (step.kind === 'rest') return 'Next: Rest';
+    var bits = roundBits(step);
+    var exercise = bits && step.block ? step.block : (step.block && step.block !== step.name ? step.block : step.name);
+    var parts = [];
+    if (exercise) parts.push(exercise);
+    if (bits) parts.push('round ' + bits.n + ' of ' + bits.of);
+    var line = 'Next: ' + parts.join(', ');
+    var cue = String(step.cue || '').replace(/\s+/g, ' ').trim();
+    if (cue) {
+      if (!/[.!?]$/.test(line)) line += '.';
+      line += ' ' + cue;
+      if (!/[.!?]$/.test(cue)) line += '.';
+    }
+    return line.replace(/\s+/g, ' ').trim();
+  }
   function renderWorkout(el, done) {
     ui.run.classList.toggle('paused', run.state === 'paused');
     ui.run.classList.toggle('done', done);
@@ -1634,9 +1663,6 @@
     if (step.cue && step.block && step.block !== step.name) sub = step.block + ' · ' + step.cue;
     else if (step.cue) sub = step.cue;
     else if (step.block && step.block !== step.name) sub = step.block;
-    setText(ui.interval, 'int', step.name);
-    setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : ('Step ' + (info.index + 1) + ' of ' + run.steps.length));
-    setText(ui.every, 'every', sub);
     setText(ui.count, 'cnt', cdTxt);
     setText(ui.elapsed, 'el', fmt(el / 1000));
     setText(ui.remaining, 'rem', fmt(Math.ceil(Math.max(0, run.totalMs - el) / 1000 - 1e-6)));
@@ -1646,7 +1672,17 @@
     setWidth(ui.tbar, 'tb', run.totalMs > 0 ? Math.min(100, el / run.totalMs * 100) : 0);
     setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
     var nxt = run.steps[info.index + 1];
-    setNext(nxt ? ('Next · ' + nxt.name) : 'Last step');
+    if (step.kind === 'rest') {
+      setText(ui.interval, 'int', currentSetLabel(info));
+      setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : 'Rest');
+      setText(ui.every, 'every', '');
+      setNext(nextStepLine(nxt));
+    } else {
+      setText(ui.interval, 'int', step.name);
+      setText(ui.label, 'lbl', run.state === 'paused' ? 'Paused' : ('Step ' + (info.index + 1) + ' of ' + run.steps.length));
+      setText(ui.every, 'every', sub);
+      setNext(nxt ? ('Next · ' + nxt.name) : 'Last step');
+    }
     document.title = cdTxt + ' · ' + step.name;
   }
   function render() {
@@ -1655,10 +1691,6 @@
     var done = run.state === 'done';
     var isWorkout = run.mode === 'workout';
     ui.run.classList.toggle('workout', isWorkout);
-    if (ui.skip) {
-      ui.skip.hidden = !(isWorkout && !done);
-      ui.controls.classList.toggle('has-skip', isWorkout && !done);
-    }
     if (isWorkout) { renderWorkout(el, done); return; }
     var info = phaseAt(done ? run.totalMs : el);
     ui.run.classList.toggle('paused', run.state === 'paused');
@@ -1696,9 +1728,10 @@
     if (isFinite(run.totalMs)) setWidth(ui.tbar, 'tb', Math.min(100, el / run.totalMs * 100));
     setText(ui.pause, 'pause', run.state === 'paused' ? 'Resume' : 'Pause');
     var lastPhase = isFinite(run.totalMs) && info.phaseEnd >= run.totalMs - 1;
-    if (lastPhase) setNext('Last step');
-    else if (info.inWork) setNext('Next · Rest ' + fmt(run.restMs / 1000));
-    else setNext('Next · Work ' + fmt(run.workMs / 1000));
+    if (info.inWork) setNext('Next · Rest ' + fmt(run.restMs / 1000));
+    else if (!lastPhase && isFinite(info.rounds) && info.roundNum < info.rounds) setNext('Next: Work, round ' + (info.roundNum + 1) + ' of ' + info.rounds);
+    else if (!lastPhase) setNext('Next: Work');
+    else setNext('');
     document.title = cdTxt + ' · ' + (info.inWork ? 'Work' : 'Rest');
   }
 
@@ -1792,7 +1825,7 @@
     ui.next = $('r-next');
     ui.ibar = $('r-ibar'); ui.tbar = $('r-tbar'); ui.tbarWrap = $('r-tbar-wrap');
     ui.elapsed = $('r-elapsed'); ui.remaining = $('r-remaining');
-    ui.pause = $('btn-pause'); ui.skip = $('btn-skip'); ui.stop = $('btn-stop'); ui.controls = ui.pause.parentNode;
+    ui.pause = $('btn-pause'); ui.stop = $('btn-stop'); ui.controls = ui.pause.parentNode;
     ui.doneControls = $('done-controls'); ui.wake = $('r-wake'); ui.audioBanner = $('audio-banner');
     ui.workoutText = $('workout-text'); ui.workoutPreview = $('workout-preview'); ui.workoutStart = $('btn-start-workout');
     if (TEST) $('test-badge').hidden = false;
@@ -1850,7 +1883,6 @@
     $('btn-back').addEventListener('click', function () { run.state = 'done'; stopSession(); });
     ui.workoutText.addEventListener('input', onWorkoutInput);
     ui.workoutStart.addEventListener('click', function () { startWorkout(false); });
-    ui.skip.addEventListener('click', skipStep);
     $('btn-audio-fix').addEventListener('click', function () { ensureAudio(); startKeepAlive(); setTimeout(checkAudioBanner, 300); });
 
     window.addEventListener('resize', function () { if (!ui.setup.hidden) renderWheels(); });
