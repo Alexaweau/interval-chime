@@ -1,5 +1,5 @@
 /* Interval Chime service worker: offline app shell, no network calls of its own. */
-var VERSION = 'interval-chime-v9';
+var VERSION = 'interval-chime-v10';
 var ASSETS = [
   './',
   './index.html',
@@ -15,6 +15,10 @@ var ASSETS = [
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(VERSION).then(function (c) { return c.addAll(ASSETS); }).then(function () { return self.skipWaiting(); }));
+});
+
+self.addEventListener('message', function (e) {
+  if (e.data && e.data.type === 'skip-waiting') self.skipWaiting();
 });
 
 self.addEventListener('activate', function (e) {
@@ -33,6 +37,24 @@ self.addEventListener('fetch', function (e) {
   // navigations with the app shell.
   if (url.pathname.indexOf('/promo/') !== -1 || /\/promo\/?$/.test(url.pathname)) return;
   var isNav = req.mode === 'navigate';
+  // The shell must not stay stale after a new worker activates. Network first
+  // for the page and its script/style; the precache is the offline fallback.
+  var path = url.pathname;
+  var isShell = isNav || /\/(index\.html|app\.js|styles\.css|sw\.js)$/.test(path);
+  if (isShell) {
+    e.respondWith(fetch(req).then(function (res) {
+      if (res && res.ok && res.type === 'basic') {
+        var copy = res.clone();
+        caches.open(VERSION).then(function (cache) { cache.put(isNav ? './index.html' : req, copy); });
+      }
+      return res;
+    }).catch(function () {
+      return caches.open(VERSION).then(function (cache) {
+        return cache.match(isNav ? './index.html' : req, { ignoreSearch: true });
+      }).then(function (hit) { return hit || new Response('Offline', { status: 503 }); });
+    }));
+    return;
+  }
   e.respondWith(caches.open(VERSION).then(function (cache) {
     var key = isNav ? './index.html' : req;
     return cache.match(key, { ignoreSearch: true }).then(function (hit) {

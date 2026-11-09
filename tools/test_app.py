@@ -19,7 +19,14 @@ def logs(page, types=None):
 def clear_log(page):
     page.evaluate('window.__chime.log.length = 0')
 
+def show_controls(page):
+    if page.is_visible('#run-controls'):
+        return
+    page.click('#run')
+    page.wait_for_timeout(40)
+
 def stop(page):
+    show_controls(page)
     page.click('#btn-stop'); page.click('#btn-stop')
 
 def pick(page, col, sec):
@@ -57,7 +64,8 @@ with sync_playwright() as p:
     page.on('console', lambda m: errors.append('console.' + m.type + ': ' + m.text) if m.type in ('error', 'warning') else None)
     page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
     failed_req = []
-    page.on('requestfailed', lambda r: failed_req.append(r.url))
+    # Chrome aborts in-flight manifest-icon fetches when the page reloads.
+    page.on('requestfailed', lambda r: failed_req.append(r.url) if 'ERR_ABORTED' not in str(r.failure) else None)
     ext_req = []
     page.on('request', lambda r: ext_req.append(r.url) if not r.url.startswith(BASE.rstrip('/')) and not r.url.startswith('data:') else None)
 
@@ -194,10 +202,19 @@ with sync_playwright() as p:
     page.wait_for_timeout(3300)
     st = page.evaluate('window.__chime.state()')
     check('default run: running, work phase, ctx running', st['state'] == 'running' and st['ctxState'] == 'running' and st['phase'] == 'work' and st['workMs'] == 60000 and st['restMs'] == 30000 and st['totalMs'] == 900000, st)
-    cnt = page.inner_text('#r-count'); iv = page.inner_text('#r-interval'); lab = page.inner_text('#r-label')
-    check('running screen shows work countdown and round 1 of 10', cnt in ('0:56', '0:57') and iv == 'Round 1 of 10' and lab == 'WORK', cnt + ' | ' + iv + ' | ' + lab)
+    cnt = page.inner_text('#r-count'); iv = page.inner_text('#r-interval')
+    check('running screen shows work countdown and round 1 of 10', cnt in ('0:56', '0:57') and iv == 'Work, round 1 of 10', cnt + ' | ' + iv)
     nxt = page.inner_text('#r-next')
-    check('default run names the next phase', 'Rest' in nxt and '0:30' in nxt, nxt)
+    check('default run names the next phase', nxt == 'Next: Rest, 0:30', nxt)
+    sizes = page.evaluate("""() => ({
+      count: parseFloat(getComputedStyle(document.getElementById('r-count')).fontSize),
+      step: parseFloat(getComputedStyle(document.getElementById('r-interval')).fontSize),
+      next: parseFloat(getComputedStyle(document.getElementById('r-next')).fontSize)
+    })""")
+    check('countdown dominates and the step names are large', sizes['count'] >= 160 and sizes['step'] >= 44 and sizes['next'] >= 32 and sizes['count'] > sizes['step'], sizes)
+    check('run screen hides the extra chrome',
+          page.is_hidden('#r-label') and page.is_hidden('#r-every') and page.is_hidden('.stats') and page.is_hidden('#r-tbar-wrap') and page.locator('#audio-banner').count() == 0 and page.locator('#btn-audio-fix').count() == 0)
+    check('pause and stop stay hidden until the screen is tapped', page.is_hidden('#run-controls'))
     sched = logs(page, ['sched-chime'])
     times = []
     seen = set()
@@ -214,7 +231,8 @@ with sync_playwright() as p:
     diffs = [round(aud[b] - aud[a], 3) for a, b in zip(expect, expect[1:])]
     alt = [30, 60] * 6
     check('scheduled spacing alternates rest 30s then work 60s', len(diffs) == len(alt) and all(abs(d - e) < 0.05 for d, e in zip(diffs, alt)), diffs)
-    check('pause and stop buttons present during the session', page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop')
+    show_controls(page)
+    check('a tap reveals pause and stop', page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop' and page.is_visible('#run-controls'))
     page.screenshot(path=os.path.join(SCREENS, 'running.png'))
     stop(page)
     page.wait_for_timeout(200)
@@ -229,7 +247,13 @@ with sync_playwright() as p:
     check('test selection 2/3/10', s['work'] == 2 and s['rest'] == 3 and s['total'] == 10, s)
     clear_log(page)
     page.click('#btn-start')
-    page.wait_for_timeout(11800)
+    page.wait_for_timeout(2500)
+    wheel_rest = page.inner_text('#r-interval')
+    wheel_next = page.inner_text('#r-next')
+    check('wheel rest shows the next work round',
+          wheel_rest == 'Rest, round 1 of 2' and 'Work' in wheel_next and 'round 2 of 2' in wheel_next and '0:02' in wheel_next,
+          wheel_rest + ' | ' + wheel_next)
+    page.wait_for_timeout(9300)
     L = logs(page)
     chimes = [e for e in L if e['type'] == 'chime']
     ends = [e for e in L if e['type'] == 'end']
@@ -261,6 +285,7 @@ with sync_playwright() as p:
     clear_log(page)
     page.click('#btn-start')
     page.wait_for_timeout(3000)
+    show_controls(page)
     page.click('#btn-pause')
     e1 = page.evaluate('window.__chime.state()')
     check('pause -> state paused, button says Resume', e1['state'] == 'paused' and page.inner_text('#btn-pause') == 'Resume', e1)
@@ -273,6 +298,7 @@ with sync_playwright() as p:
     check('elapsed frozen while paused', abs(e1['elapsed'] - e2['elapsed']) <= 1, (e1['elapsed'], e2['elapsed']))
     check('no chimes while paused', n_on_during == 0 and not [c for c in logs(page, ['chime']) if c['expected'] > 2000], n_on_during)
     clear_log(page)
+    show_controls(page)
     page.click('#btn-pause')
     page.wait_for_timeout(4500)
     L = logs(page)
@@ -282,6 +308,7 @@ with sync_playwright() as p:
           [(c['expected'], c['elapsed'], c['phase']) for c in ch])
     on2 = [o['elapsed'] for o in L if o['type'] == 'onset' and o['elapsed'] is not None]
     check('audio onsets after resume at 4 s / 6 s', any(abs(o - 4000) < 80 for o in on2) and any(abs(o - 6000) < 80 for o in on2), on2)
+    show_controls(page)
     page.click('#btn-stop')
     check('first Stop tap only arms (Tap to stop)', page.inner_text('#btn-stop') == 'Tap to stop' and page.evaluate('window.__chime.state().state') == 'running')
     page.click('#btn-stop')
@@ -320,8 +347,8 @@ with sync_playwright() as p:
     check('open-ended shows infinity on the total column', page.is_visible('#total-open'))
     page.click('#btn-start'); page.wait_for_timeout(1200)
     check('open-ended run shows Round 1 and infinity remaining',
-          page.inner_text('#r-interval') == 'Round 1' and page.inner_text('#r-remaining') == '∞',
-          page.inner_text('#r-interval') + ' | ' + page.inner_text('#r-remaining'))
+          page.inner_text('#r-interval') == 'Work, round 1' and page.text_content('#r-remaining') == '∞',
+          page.inner_text('#r-interval') + ' | ' + page.text_content('#r-remaining'))
     page.screenshot(path=os.path.join(SCREENS, 'running-open-ended.png'))
     stop(page)
 
@@ -573,7 +600,7 @@ with sync_playwright() as p:
     body = page.content().lower()
     check("keep-open notes are gone", "keep the app open" not in body and "keep this app open" not in body and "may pause the chimes" not in body and "may pause chimes" not in body, "")
     check("workout screen shows the step", page.inner_text("#r-interval") == "Rope")
-    check("a single workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
+    check("a single workout step has no next step", page.locator("#r-next").is_hidden(), page.text_content("#r-next"))
     page.screenshot(path=os.path.join(SCREENS, "workout-running.png"))
     stop(page)
     page.wait_for_timeout(80)
@@ -585,20 +612,22 @@ with sync_playwright() as p:
     page.wait_for_timeout(350)
     st = page.evaluate("window.__chime.state()")
     check("short workout is on Alpha", st["state"] == "running" and st["mode"] == "workout" and st["stepName"] == "Alpha" and page.inner_text("#r-interval") == "Alpha", st)
-    check("workout names the next step", page.inner_text("#r-next") == "Next · Beta", page.inner_text("#r-next"))
+    check("workout names the next step", page.inner_text("#r-next") == "Next: Beta. Second move.", page.inner_text("#r-next"))
+    show_controls(page)
     check("pause is available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-stop"))
     page.click("#btn-pause")
     e1 = page.evaluate("window.__chime.state()")
     page.wait_for_timeout(700)
     e2 = page.evaluate("window.__chime.state()")
     check("workout pause freezes the clock", e1["state"] == "paused" and page.inner_text("#btn-pause") == "Resume" and abs(e1["elapsed"] - e2["elapsed"]) <= 1, (e1["elapsed"], e2["elapsed"]))
+    show_controls(page)
     page.click("#btn-pause")
     # Alpha is 8s and about 0.3s has already run; the clock reaches Beta on its own.
     page.wait_for_timeout(8200)
     st = page.evaluate("window.__chime.state()")
     spoken_beta = [e["text"] for e in logs(page, ["speak"])]
     check("the timer advances to Beta and speaks it", st["stepName"] == "Beta" and page.inner_text("#r-interval") == "Beta" and any(t.startswith("Beta") for t in spoken_beta), (st["stepName"], spoken_beta))
-    check("the last workout step says last step", page.inner_text("#r-next") == "Last step", page.inner_text("#r-next"))
+    check("the last workout step has no next step", page.locator("#r-next").is_hidden(), page.text_content("#r-next"))
     stop(page)
     check("stop leaves the workout", page.is_visible("#setup") and page.evaluate("window.__chime.state().state") == "idle")
 
@@ -607,24 +636,22 @@ with sync_playwright() as p:
     page.click("#btn-start-workout")
     page.wait_for_timeout(2600)
     rest1 = {
-        "label": page.inner_text("#r-label"),
-        "round": page.inner_text("#r-interval"),
+        "step": page.inner_text("#r-interval"),
         "next": page.inner_text("#r-next"),
         "count": page.inner_text("#r-count"),
     }
     check("first rest names the next round",
-          rest1["label"] == "REST" and rest1["round"] == "Round 1 of 4"
+          rest1["step"] == "Rest, round 1 of 4"
           and rest1["next"] == "Next: Dumbbell bench press, round 2 of 4. Slow lower."
           and rest1["count"].startswith("0:"),
           rest1)
     page.wait_for_timeout(4000)
     rest2 = {
-        "label": page.inner_text("#r-label"),
-        "round": page.inner_text("#r-interval"),
+        "step": page.inner_text("#r-interval"),
         "next": page.inner_text("#r-next"),
     }
     check("second rest names round 3 of 4",
-          rest2["label"] == "REST" and rest2["round"] == "Round 2 of 4"
+          rest2["step"] == "Rest, round 2 of 4"
           and rest2["next"] == "Next: Dumbbell bench press, round 3 of 4. Slow lower.",
           rest2)
     stop(page)
@@ -641,6 +668,41 @@ with sync_playwright() as p:
           st["state"] == "done" and page.inner_text("#r-count") == "Done" and "Done" in done_speech and any(e["type"] == "end" for e in logs(page)),
           (st["state"], done_speech))
     page.click("#btn-back")
+
+    # Rest written as its own coach line (kind stays a plain step named Rest).
+    page.fill("#workout-text", "Rope, 2 sec: Easy pace.\nRest, 2 sec\nRings, 3 sec: Smooth swings.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(2400)
+    between = {"step": page.inner_text("#r-interval"), "next": page.inner_text("#r-next")}
+    check("rest between steps names the following exercise",
+          between["step"] == "Rest" and between["next"] == "Next: Rings. Smooth swings.",
+          between)
+    stop(page)
+    page.wait_for_timeout(80)
+
+    # The rest before the last exercise, and a rest that ends the workout.
+    page.fill("#workout-text", "Bag, 1 rounds of 2 sec on, 2 sec off: Jab.\nCool-down, 4 sec: Walk it out.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(2400)
+    before_last = {"step": page.inner_text("#r-interval"), "next": page.inner_text("#r-next")}
+    check("rest before the last step names that step and its cue",
+          before_last["step"] == "Rest, round 1 of 1" and before_last["next"] == "Next: Cool-down. Walk it out.",
+          before_last)
+    stop(page)
+    page.wait_for_timeout(80)
+
+    page.fill("#workout-text", "Bag, 1 rounds of 2 sec on, 2 sec off: Jab.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(2400)
+    last_rest = {"step": page.inner_text("#r-interval"), "next_hidden": page.locator("#r-next").is_hidden()}
+    check("a final rest with nothing after still names itself",
+          last_rest["step"] == "Rest, round 1 of 1" and last_rest["next_hidden"],
+          last_rest)
+    stop(page)
+    page.wait_for_timeout(80)
 
     # ---------- 6c. any permutation of a pasted plan ----------
     def round_steps(n, on, off):
