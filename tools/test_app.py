@@ -19,14 +19,7 @@ def logs(page, types=None):
 def clear_log(page):
     page.evaluate('window.__chime.log.length = 0')
 
-def show_controls(page):
-    if page.is_visible('#run-controls'):
-        return
-    page.click('#run')
-    page.wait_for_timeout(40)
-
 def stop(page):
-    show_controls(page)
     page.click('#btn-stop'); page.click('#btn-stop')
 
 def pick(page, col, sec):
@@ -211,10 +204,10 @@ with sync_playwright() as p:
       step: parseFloat(getComputedStyle(document.getElementById('r-interval')).fontSize),
       next: parseFloat(getComputedStyle(document.getElementById('r-next')).fontSize)
     })""")
-    check('countdown dominates and the step names are large', sizes['count'] >= 160 and sizes['step'] >= 44 and sizes['next'] >= 32 and sizes['count'] > sizes['step'], sizes)
+    check('countdown dominates and the step names stay readable', sizes['count'] >= 96 and sizes['step'] >= 18 and sizes['next'] >= 14 and sizes['count'] > sizes['step'] > sizes['next'], sizes)
     check('run screen hides the extra chrome',
           page.is_hidden('#r-label') and page.is_hidden('#r-every') and page.is_hidden('.stats') and page.is_hidden('#r-tbar-wrap') and page.locator('#audio-banner').count() == 0 and page.locator('#btn-audio-fix').count() == 0)
-    check('pause and stop stay hidden until the screen is tapped', page.is_hidden('#run-controls'))
+    check('pause and stop stay visible', page.is_visible('#btn-pause') and page.is_visible('#btn-stop') and page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop')
     sched = logs(page, ['sched-chime'])
     times = []
     seen = set()
@@ -231,8 +224,6 @@ with sync_playwright() as p:
     diffs = [round(aud[b] - aud[a], 3) for a, b in zip(expect, expect[1:])]
     alt = [30, 60] * 6
     check('scheduled spacing alternates rest 30s then work 60s', len(diffs) == len(alt) and all(abs(d - e) < 0.05 for d, e in zip(diffs, alt)), diffs)
-    show_controls(page)
-    check('a tap reveals pause and stop', page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop' and page.is_visible('#run-controls'))
     page.screenshot(path=os.path.join(SCREENS, 'running.png'))
     stop(page)
     page.wait_for_timeout(200)
@@ -285,7 +276,6 @@ with sync_playwright() as p:
     clear_log(page)
     page.click('#btn-start')
     page.wait_for_timeout(3000)
-    show_controls(page)
     page.click('#btn-pause')
     e1 = page.evaluate('window.__chime.state()')
     check('pause -> state paused, button says Resume', e1['state'] == 'paused' and page.inner_text('#btn-pause') == 'Resume', e1)
@@ -298,7 +288,6 @@ with sync_playwright() as p:
     check('elapsed frozen while paused', abs(e1['elapsed'] - e2['elapsed']) <= 1, (e1['elapsed'], e2['elapsed']))
     check('no chimes while paused', n_on_during == 0 and not [c for c in logs(page, ['chime']) if c['expected'] > 2000], n_on_during)
     clear_log(page)
-    show_controls(page)
     page.click('#btn-pause')
     page.wait_for_timeout(4500)
     L = logs(page)
@@ -308,7 +297,6 @@ with sync_playwright() as p:
           [(c['expected'], c['elapsed'], c['phase']) for c in ch])
     on2 = [o['elapsed'] for o in L if o['type'] == 'onset' and o['elapsed'] is not None]
     check('audio onsets after resume at 4 s / 6 s', any(abs(o - 4000) < 80 for o in on2) and any(abs(o - 6000) < 80 for o in on2), on2)
-    show_controls(page)
     page.click('#btn-stop')
     check('first Stop tap only arms (Tap to stop)', page.inner_text('#btn-stop') == 'Tap to stop' and page.evaluate('window.__chime.state().state') == 'running')
     page.click('#btn-stop')
@@ -613,14 +601,12 @@ with sync_playwright() as p:
     st = page.evaluate("window.__chime.state()")
     check("short workout is on Alpha", st["state"] == "running" and st["mode"] == "workout" and st["stepName"] == "Alpha" and page.inner_text("#r-interval") == "Alpha", st)
     check("workout names the next step", page.inner_text("#r-next") == "Next: Beta. Second move.", page.inner_text("#r-next"))
-    show_controls(page)
     check("pause is available", page.inner_text("#btn-pause") == "Pause" and page.is_visible("#btn-stop"))
     page.click("#btn-pause")
     e1 = page.evaluate("window.__chime.state()")
     page.wait_for_timeout(700)
     e2 = page.evaluate("window.__chime.state()")
     check("workout pause freezes the clock", e1["state"] == "paused" and page.inner_text("#btn-pause") == "Resume" and abs(e1["elapsed"] - e2["elapsed"]) <= 1, (e1["elapsed"], e2["elapsed"]))
-    show_controls(page)
     page.click("#btn-pause")
     # Alpha is 8s and about 0.3s has already run; the clock reaches Beta on its own.
     page.wait_for_timeout(8200)
@@ -825,6 +811,117 @@ with sync_playwright() as p:
           st)
     stop(page)
     page.wait_for_timeout(80)
+
+    # ---------- 6d. every iPhone size fits, buttons stay on screen ----------
+    meta = page.evaluate("document.querySelector('meta[name=viewport]').content")
+    check('viewport meta fits the device', 'width=device-width' in meta and 'initial-scale=1' in meta and 'viewport-fit=cover' in meta, meta)
+
+    PHONES = [(320, 568), (375, 667), (375, 812), (390, 844), (393, 852), (430, 932), (844, 390)]
+
+    def layout_ok(page):
+        return page.evaluate("""() => {
+          const se = document.scrollingElement;
+          const iw = window.innerWidth, ih = window.innerHeight;
+          const wideMin = [];
+          document.querySelectorAll('body *').forEach((el) => {
+            const mw = getComputedStyle(el).minWidth;
+            if (mw.endsWith('px') && parseFloat(mw) > iw + 1) wideMin.push((el.id || el.className || el.tagName) + ' ' + mw);
+          });
+          return { wide: se.scrollWidth <= iw + 1, scrollW: se.scrollWidth, iw: iw, ih: ih, wideMin: wideMin.slice(0, 4) };
+        }""")
+
+    def in_view(page, sel):
+        return page.evaluate("""(sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return { ok: false, why: 'missing' };
+          const r = el.getBoundingClientRect();
+          const iw = window.innerWidth, ih = window.innerHeight;
+          const style = getComputedStyle(el);
+          const shown = style.display !== 'none' && style.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+          return {
+            ok: shown && r.height >= 44 && r.width >= 44 && r.top >= -1 && r.left >= -1 && r.bottom <= ih + 1 && r.right <= iw + 1,
+            top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right),
+            h: Math.round(r.height), w: Math.round(r.width), ih: ih, iw: iw, shown: shown
+          };
+        }""", sel)
+
+    page.fill("#workout-text", "Dumbbell Romanian deadlift, 10 min: Slow lower, then a long pause at the bottom.")
+    page.wait_for_timeout(60)
+    for w, h in PHONES:
+        page.set_viewport_size({'width': w, 'height': h})
+        page.wait_for_timeout(40)
+        page.evaluate("window.scrollTo(0, 0)")
+        paste = layout_ok(page)
+        go = in_view(page, '#btn-start-workout')
+        check('paste and plan fit %dx%d' % (w, h), paste['wide'] and not paste['wideMin'] and go['ok'], (paste, go))
+        page.evaluate("document.querySelector('.hero').scrollIntoView({block:'start'})")
+        page.wait_for_timeout(30)
+        wheel = layout_ok(page)
+        start = in_view(page, '#btn-start')
+        check('wheel and Start fit %dx%d' % (w, h), wheel['wide'] and not wheel['wideMin'] and start['ok'], (wheel, start))
+
+    page.evaluate("window.scrollTo(0, 0)")
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.fill("#workout-text", "Dumbbell Romanian deadlift, 2 sec: Slow lower, then a long pause at the bottom.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(150)
+    for w, h in PHONES:
+        page.set_viewport_size({'width': w, 'height': h})
+        page.wait_for_timeout(30)
+        run = page.evaluate("""() => {
+          const step = document.getElementById('r-interval');
+          const count = document.getElementById('r-count');
+          const next = document.getElementById('r-next');
+          step.textContent = 'Dumbbell Romanian deadlift, round 10 of 10';
+          count.textContent = '10:00';
+          next.hidden = false;
+          next.textContent = 'Next: Dumbbell Romanian deadlift, round 10 of 10. Slow lower, then a long pause at the bottom.';
+          const se = document.scrollingElement;
+          const iw = window.innerWidth, ih = window.innerHeight;
+          const runEl = document.getElementById('run');
+          const rr = runEl.getBoundingClientRect();
+          function box(el) {
+            const r = el.getBoundingClientRect();
+            return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, sw: el.scrollWidth, cw: el.clientWidth };
+          }
+          const c = box(count), s = box(step), n = box(next);
+          return {
+            wide: se.scrollWidth <= iw + 1,
+            tall: se.scrollHeight <= ih + 2 && rr.height <= ih + 2 && rr.bottom <= ih + 2,
+            count: c.sw <= c.cw + 1 && c.right <= iw + 1 && c.left >= -1,
+            step: s.right <= iw + 1 && s.left >= -1 && s.bottom <= ih + 1,
+            next: n.right <= iw + 1 && n.left >= -1 && n.bottom <= ih + 1,
+            scrollW: se.scrollWidth, scrollH: se.scrollHeight, iw: iw, ih: ih, runH: Math.round(rr.height),
+            countW: c.sw, countBox: c.cw
+          };
+        }""")
+        pause = in_view(page, '#btn-pause')
+        stopb = in_view(page, '#btn-stop')
+        check('run screen fits %dx%d' % (w, h),
+              run['wide'] and run['tall'] and run['count'] and run['step'] and run['next'] and pause['ok'] and stopb['ok'],
+              {'run': run, 'pause': pause, 'stop': stopb})
+    stop(page)
+    page.wait_for_timeout(60)
+    page.fill("#workout-text", "Beep, 2 sec: Go.")
+    page.wait_for_timeout(30)
+    page.set_viewport_size({'width': 390, 'height': 844})
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(2600)
+    for w, h in PHONES:
+        page.set_viewport_size({'width': w, 'height': h})
+        page.wait_for_timeout(30)
+        done = layout_ok(page)
+        again = in_view(page, '#btn-again')
+        back = in_view(page, '#btn-back')
+        tall = page.evaluate("""() => {
+          const se = document.scrollingElement;
+          const run = document.getElementById('run').getBoundingClientRect();
+          return se.scrollHeight <= window.innerHeight + 2 && run.height <= window.innerHeight + 2;
+        }""")
+        check('done screen fits %dx%d' % (w, h), done['wide'] and not done['wideMin'] and tall and again['ok'] and back['ok'], (done, tall, again, back))
+    page.click("#btn-back")
+    page.set_viewport_size({'width': 390, 'height': 844})
 
     # ---------- 7. offline ----------
     ctx.set_offline(True)

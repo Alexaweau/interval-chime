@@ -14,7 +14,7 @@ The main screen is one three-column wheel: work, rest, and total time. Defaults 
 Below the fold: the old interval and session presets, custom lengths, lead-in beeps, silent-switch audio, volume, and a test chime.
 
 - A bell at the end of each work interval and each rest interval, and a distinct triple chime when the session ends.
-- The run screen is the current step, a large countdown, and the next step (name, cue, and round). Tap the screen to show Pause and Stop; tap Stop twice to confirm. They hide again after a few seconds.
+- The run screen is the current step, a large countdown, and the next step (name, cue, and round). Pause and Stop stay at the bottom of the screen. Tap Stop twice to confirm.
 - Timing is computed from `performance.now()` (with a wall-clock correction after device sleep). Chimes are pre-scheduled on the Web Audio clock up to 10 minutes ahead.
 - Screen Wake Lock while running, re-acquired when the app becomes visible again.
 - Settings are saved in localStorage.

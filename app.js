@@ -1600,19 +1600,11 @@
     ui.run.hidden = false;
     ui.stop.classList.remove('confirm');
     ui.stop.textContent = 'Stop';
-    if (ui.controls) ui.controls.hidden = true;
+    if (ui.controls) ui.controls.hidden = false;
+    if (ui.doneControls) ui.doneControls.hidden = true;
     lastText = {};
     window.scrollTo(0, 0);
     render();
-  }
-  var controlsTimer = 0;
-  function revealControls() {
-    if (!ui.controls || run.state === 'done' || run.state === 'idle') return;
-    ui.controls.hidden = false;
-    clearTimeout(controlsTimer);
-    controlsTimer = setTimeout(function () {
-      if (ui.controls && run.state !== 'done') ui.controls.hidden = true;
-    }, 4500);
   }
 
   function isRestStep(step) {
@@ -1910,10 +1902,6 @@
     $('btn-back').addEventListener('click', function () { run.state = 'done'; stopSession(); });
     ui.workoutText.addEventListener('input', onWorkoutInput);
     ui.workoutStart.addEventListener('click', function () { startWorkout(false); });
-    ui.run.addEventListener('click', function (e) {
-      if (e.target.closest && e.target.closest('button')) return;
-      revealControls();
-    });
 
     window.addEventListener('resize', function () { if (!ui.setup.hidden) renderWheels(); });
     renderSetup();

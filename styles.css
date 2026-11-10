@@ -18,7 +18,7 @@
   --safe-r: env(safe-area-inset-right, 0px);
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+html, body { margin: 0; min-height: 100%; max-width: 100%; background: var(--bg); color: var(--text); }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
@@ -38,10 +38,10 @@ button, input { font: inherit; color: inherit; }
 
 /* ---------- paste a workout, then start ---------- */
 .paste-top {
-  height: 100vh;
   height: 100dvh;
-  min-height: 100vh;
-  min-height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  min-width: 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -52,14 +52,15 @@ button, input { font: inherit; color: inherit; }
 .paste-top #workout-text {
   order: 1;
   flex: 1 1 auto;
-  min-height: 120px;
+  min-height: 0;
+  min-width: 0;
   margin: 0;
 }
 .paste-top #btn-start-workout.huge {
   order: 3;
   margin: 0;
-  min-height: 120px;
-  font-size: 40px;
+  min-height: clamp(44px, 14dvh, 120px);
+  font-size: clamp(20px, 4.2dvh, 40px);
   font-weight: 800;
   letter-spacing: -0.03em;
   border-radius: 28px;
@@ -68,7 +69,9 @@ button, input { font: inherit; color: inherit; }
 .paste-top #workout-preview {
   order: 2;
   flex: 0 1 auto;
-  max-height: 36vh;
+  max-height: min(36dvh, 36svh);
+  min-height: 0;
+  min-width: 0;
   overflow: auto;
   margin: 0;
   background: var(--panel);
@@ -101,12 +104,15 @@ button, input { font: inherit; color: inherit; }
 
 /* ---------- main: one wheel + start ---------- */
 .hero {
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  min-width: 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
   padding: calc(18px + var(--safe-t)) calc(16px + var(--safe-r)) calc(12px + var(--safe-b)) calc(16px + var(--safe-l));
 }
 .wheel-labels {
@@ -123,7 +129,12 @@ button, input { font: inherit; color: inherit; }
 }
 .wheel {
   position: relative;
-  height: 336px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: 336px;
+  width: 100%;
+  min-width: 0;
   display: flex;
   background: var(--panel);
   border: 1px solid var(--line);
@@ -133,7 +144,6 @@ button, input { font: inherit; color: inherit; }
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
-  flex: none;
 }
 .col {
   position: relative;
@@ -207,8 +217,8 @@ button, input { font: inherit; color: inherit; }
 
 #btn-start.huge {
   margin-top: 18px;
-  min-height: 120px;
-  font-size: 40px;
+  min-height: clamp(44px, 14dvh, 120px);
+  font-size: clamp(20px, 4.2dvh, 40px);
   font-weight: 800;
   letter-spacing: -0.03em;
   border-radius: 28px;
@@ -223,6 +233,7 @@ button, input { font: inherit; color: inherit; }
 h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 0 0 10px; font-weight: 650; }
 .group { margin: 18px 0; }
 .grid { display: grid; gap: 10px; }
+.grid > * { min-width: 0; }
 .g2 { grid-template-columns: repeat(2, 1fr); }
 .g3 { grid-template-columns: repeat(3, 1fr); }
 .grid .wide { grid-column: 1 / -1; }
@@ -273,7 +284,7 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .toggle input:focus-visible + .sw { outline: 3px solid #fff; outline-offset: 2px; }
 .vol { display: flex; align-items: center; gap: 12px; padding: 12px 0; flex-wrap: wrap; }
 .vol label { font-size: 18px; }
-.vol input[type=range] { flex: 1; min-width: 120px; height: 40px; accent-color: var(--accent); }
+.vol input[type=range] { flex: 1 1 80px; min-width: 0; height: 40px; accent-color: var(--accent); }
 
 #workout-text {
   display: block;
@@ -303,7 +314,7 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   margin: 8px 0;
   overflow-wrap: break-word;
 }
-.wk-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-weight: 750; font-size: 18px; }
+.wk-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-weight: 750; font-size: 18px; min-width: 0; flex-wrap: wrap; }
 .wk-head .tm, .wk-sub .tm { flex: none; font-variant-numeric: tabular-nums; color: var(--dim); font-weight: 650; }
 .wk-cue { color: var(--dim); font-size: 14.5px; line-height: 1.35; margin-top: 4px; }
 .wk-warn { color: var(--accent); font-size: 14px; line-height: 1.35; margin-top: 4px; }
@@ -320,26 +331,37 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  min-height: 100dvh;
+  height: 100dvh;
+  max-height: 100dvh;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   animation: rise 0.18s ease-out;
 }
 #run[hidden] { display: none; }
 .run-read {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
   text-align: center;
   gap: 6px;
-  padding: 8px 4px 8px;
+  padding: 4px 2px 8px;
+  overflow: hidden;
 }
 #run .r-interval {
-  font-size: clamp(48px, 13vw, 72px);
+  font-size: clamp(16px, min(6.8vw, 5svh, 5dvh), 36px);
   font-weight: 800;
-  letter-spacing: -0.035em;
-  line-height: 1.05;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  max-width: 100%;
 }
 #run .r-every,
 #run .r-label,
@@ -348,29 +370,38 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 #run #r-tbar-wrap,
 #run .status { display: none !important; }
 #run .r-count {
-  font-size: clamp(168px, 48vw, 280px);
-  line-height: 0.86;
+  /* 28vw leaves room for "10:00" in SF Pro on a 320px phone; svh/dvh shrink it in landscape. */
+  width: 100%;
+  font-size: clamp(56px, min(28vw, 28svh, 28dvh), 180px);
+  line-height: 0.9;
   font-weight: 800;
-  letter-spacing: -0.05em;
+  letter-spacing: -0.04em;
   font-variant-numeric: tabular-nums;
-  margin: 4px 0;
+  margin: 2px 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
   color: var(--accent);
   transition: color 0.2s ease;
 }
 #run .r-next {
-  margin: 10px auto 0;
-  max-width: 16em;
+  margin: 6px auto 0;
+  max-width: 100%;
   color: var(--text);
-  font-size: clamp(34px, 9vw, 48px);
+  font-size: clamp(14px, min(4.4vw, 3.6svh, 3.6dvh), 22px);
   font-weight: 750;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
   overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 #run.phase-rest .r-count,
 #run.phase-rest .r-interval { color: var(--rest); }
 .paused .r-count { color: var(--dim); animation: blink 1.4s steps(2, start) infinite; }
-.done .r-count { color: var(--ok); font-size: clamp(96px, 28vw, 180px); }
+.done .r-count { color: var(--ok); }
 @keyframes blink { to { opacity: .35; } }
 .bar { height: 10px; background: var(--panel2); border-radius: 8px; overflow: hidden; }
 .bar.thin { height: 6px; }
@@ -380,14 +411,22 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; text-align: center; }
 .stat .k { display: block; color: var(--dim); font-size: 14px; text-transform: uppercase; letter-spacing: .08em; font-weight: 650; }
 .stat .v { display: block; font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.controls { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; }
+.controls { display: grid; grid-template-columns: 1.4fr 1fr; gap: 8px; min-width: 0; }
 .controls .btn.huge { min-height: 84px; border-radius: 22px; }
 #run .controls {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
+  position: relative;
+  flex: none;
+  width: 100%;
+  min-width: 0;
   z-index: 3;
+  margin-top: 8px;
+}
+#run .controls .btn.huge {
+  min-height: 44px;
+  height: 44px;
+  font-size: 16px;
+  border-radius: 14px;
+  padding: 0 10px;
 }
 .status { text-align: center; color: var(--dim); font-size: 14px; margin: 0; }
 .banner { background: #3b2a00; border: 1px solid var(--accent); border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 15px; }
@@ -401,9 +440,7 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: v
 }
 
 @media (max-height: 700px) {
-  .wheel { height: 288px; }
-  #run .r-count { font-size: clamp(120px, 40vw, 200px); }
-  .btn.huge, #btn-start.huge { min-height: 96px; font-size: 32px; }
+  .wheel { max-height: 280px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .paused .r-count { animation: none; }
