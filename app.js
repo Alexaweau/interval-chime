@@ -122,10 +122,20 @@
     settings.csMin = clampInt(Math.round(settings.total / 60), 1, 600, 15);
   }
 
-  // ---------- audio (unchanged engine: Web Audio clock, silent-switch keepalive) ----------
+  // ---------- audio ----------
+  // Web Audio oscillators are muted by the iOS ringer switch. HTML <audio>
+  // is not, and audioSession 'playback' (Safari 16.4+) routes the context
+  // the same way. Both are started inside the Start tap, with no await
+  // between resume() and play(): awaiting would leave the gesture.
   var ctx = null, master = null, comp = null, analyser = null;
   var events = [];
   var keepAlive = null;
+  var lastSessionType = '';
+  var htmlPlayCount = 0;
+  var htmlPlayedInGesture = false;
+  var chimeUrls = null;
+  var chimeEls = {};
+  var htmlTimers = [];
 
   function ensureAudio() {
     if (!ctx) {
@@ -145,8 +155,8 @@
       }
       ctx.onstatechange = onCtxState;
     }
-    // resume() and the silent buffer must be invoked in the same turn as the
-    // Start tap. Do not await them; iOS only unlocks inside that gesture.
+    // resume() is invoked, not awaited, so the HTMLAudio.play() calls below
+    // stay on the user-gesture stack.
     try { if (ctx.state !== 'running') ctx.resume(); } catch (e) { /* ignore */ }
     try {
       var b = ctx.createBuffer(1, 1, ctx.sampleRate);
@@ -154,27 +164,123 @@
     } catch (e2) { /* ignore */ }
     return ctx;
   }
-  function unlockAudioFromGesture() {
+  function resumeAudioGraph() {
     setAudioSessionType(settings.override ? 'playback' : 'ambient');
+    if (ctx && ctx.state !== 'running') {
+      try { ctx.resume(); } catch (e) { /* ignore */ }
+    }
+    if (settings.override) startKeepAlive();
+    else stopKeepAlive();
+  }
+  function unlockAudioFromGesture() {
+    resumeAudioGraph();
     ensureAudio();
-    startKeepAlive();
+    if (settings.override) {
+      primeChimeElements();
+      startKeepAlive();
+    }
     unlockSpeech();
   }
 
-  function silentWavURI() {
-    var rate = 8000, n = rate, bytes = 44 + n * 2, buf = new ArrayBuffer(bytes), dv = new DataView(buf);
+  function wavDataUri(samples, rate) {
+    var n = samples.length, bytes = 44 + n * 2, buf = new ArrayBuffer(bytes), dv = new DataView(buf);
     function str(o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); }
     str(0, 'RIFF'); dv.setUint32(4, bytes - 8, true); str(8, 'WAVE'); str(12, 'fmt ');
     dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
     dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
     str(36, 'data'); dv.setUint32(40, n * 2, true);
-    for (var i = 0; i < n; i++) dv.setInt16(44 + i * 2, (i % 2 ? 1 : -1), true);
+    for (var i = 0; i < n; i++) dv.setInt16(44 + i * 2, samples[i], true);
     var bin = '', u8 = new Uint8Array(buf);
     for (var j = 0; j < u8.length; j += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(j, j + 0x8000));
     return 'data:audio/wav;base64,' + btoa(bin);
   }
+  function silentWavURI() {
+    var rate = 8000, n = rate, samples = new Array(n);
+    for (var i = 0; i < n; i++) samples[i] = i % 2 ? 1 : -1;
+    return wavDataUri(samples, rate);
+  }
+  function toneWav(tones) {
+    var rate = 16000, seconds = tones[tones.length - 1].t + tones[tones.length - 1].dur + 0.05;
+    var n = Math.floor(rate * seconds), samples = new Array(n);
+    for (var i = 0; i < n; i++) {
+      var t = i / rate, s = 0;
+      for (var k = 0; k < tones.length; k++) {
+        var tone = tones[k];
+        var dt = t - tone.t;
+        if (dt < 0 || dt > tone.dur) continue;
+        var env = Math.exp(-3.2 * dt / tone.dur);
+        s += Math.sin(2 * Math.PI * tone.freq * dt) * env * tone.amp;
+      }
+      samples[i] = Math.max(-32767, Math.min(32767, Math.round(s * 32767)));
+    }
+    return wavDataUri(samples, rate);
+  }
+  function buildChimeUrls() {
+    if (chimeUrls) return;
+    chimeUrls = {
+      chime: toneWav([{ t: 0, freq: 880, dur: 0.42, amp: 0.85 }]),
+      start: toneWav([{ t: 0, freq: 1318, dur: 0.22, amp: 0.7 }]),
+      beep: toneWav([{ t: 0, freq: 1320, dur: 0.12, amp: 0.55 }]),
+      end: toneWav([
+        { t: 0, freq: 659, dur: 0.55, amp: 0.7 },
+        { t: 0.22, freq: 830, dur: 0.55, amp: 0.7 },
+        { t: 0.44, freq: 988, dur: 0.7, amp: 0.75 }
+      ])
+    };
+  }
+  function ensureChimeElements() {
+    buildChimeUrls();
+    ['chime', 'start', 'beep', 'end'].forEach(function (kind) {
+      if (chimeEls[kind]) return;
+      var a = document.createElement('audio');
+      a.setAttribute('playsinline', '');
+      a.setAttribute('x-webkit-airplay', 'deny');
+      a.preload = 'auto';
+      a.src = chimeUrls[kind];
+      chimeEls[kind] = a;
+    });
+  }
+  function kickHtml(el) {
+    if (!el) return;
+    htmlPlayCount++;
+    try {
+      var p = el.play();
+      if (p && p.catch) p.catch(function (e) { log({ type: 'html-audio-error', msg: String(e) }); });
+    } catch (e2) { /* ignore */ }
+  }
+  function primeChimeElements() {
+    ensureChimeElements();
+    Object.keys(chimeEls).forEach(function (kind) {
+      var el = chimeEls[kind];
+      el.volume = 0.001;
+      try { el.currentTime = 0; } catch (e) { /* ignore */ }
+      kickHtml(el);
+    });
+    htmlPlayedInGesture = true;
+  }
+  function playHtmlCue(kind) {
+    if (!settings.override) return;
+    ensureChimeElements();
+    var el = chimeEls[kind] || chimeEls.chime;
+    el.volume = settings.volume;
+    try { el.currentTime = 0; } catch (e) { /* ignore */ }
+    kickHtml(el);
+    log({ type: 'html-chime', kind: kind || 'chime' });
+  }
+  function armHtml(kind, audioTime) {
+    if (!settings.override || !ctx) return;
+    var delay = (audioTime - ctx.currentTime) * 1000;
+    if (delay < 50) { playHtmlCue(kind); return; }
+    var id = setTimeout(function () { playHtmlCue(kind); }, delay);
+    htmlTimers.push(id);
+  }
+  function clearHtmlTimers() {
+    for (var i = 0; i < htmlTimers.length; i++) clearTimeout(htmlTimers[i]);
+    htmlTimers = [];
+  }
 
   function setAudioSessionType(t) {
+    lastSessionType = t;
     try { if (navigator.audioSession) navigator.audioSession.type = t; } catch (e) { /* ignore */ }
   }
 
@@ -188,8 +294,7 @@
       keepAlive.loop = true; keepAlive.preload = 'auto';
       keepAlive.src = silentWavURI();
     }
-    var p = keepAlive.play();
-    if (p && p.catch) p.catch(function (e) { log({ type: 'keepalive-error', msg: String(e) }); });
+    kickHtml(keepAlive);
   }
   function stopKeepAlive() { if (keepAlive) { try { keepAlive.pause(); } catch (e) {} } }
 
@@ -217,18 +322,20 @@
       addOsc(ev, 'sine', freq * p[0], t, Math.max(0.0002, level * p[1] * 0.32), 0.004, decay * p[2]);
     }
   }
-  function playChime(t) { var ev = newEvent(t); bell(ev, t, 880, 2.4, 1); return ev; }
+  function playChime(t) { var ev = newEvent(t); bell(ev, t, 880, 2.4, 1); armHtml('chime', t); return ev; }
   function playEnd(t) {
     var ev = newEvent(t);
     bell(ev, t, 659.25, 3.2, 1);
     bell(ev, t + 0.6, 830.61, 3.2, 1);
     bell(ev, t + 1.2, 987.77, 5.0, 1.05);
+    armHtml('end', t);
     return ev;
   }
-  function playBeep(t) { var ev = newEvent(t); addOsc(ev, 'triangle', 1318.5, t, 0.32, 0.005, 0.14); return ev; }
-  function playStartCue(t) { var ev = newEvent(t); bell(ev, t, 1318.5, 0.6, 0.45); return ev; }
+  function playBeep(t) { var ev = newEvent(t); addOsc(ev, 'triangle', 1318.5, t, 0.32, 0.005, 0.14); armHtml('beep', t); return ev; }
+  function playStartCue(t) { var ev = newEvent(t); bell(ev, t, 1318.5, 0.6, 0.45); armHtml('start', t); return ev; }
 
   function cancelSounds(onlyFuture) {
+    clearHtmlTimers();
     if (!ctx) return;
     var tnow = ctx.currentTime, keep = [];
     for (var i = 0; i < events.length; i++) {
@@ -541,18 +648,63 @@
   function tidyCue(cue) {
     return String(cue || '').replace(/\s+/g, ' ').replace(/\s+([.])/g, '$1').replace(/(?:[.] ?){2,}/g, '. ').replace(/^[\s.,;:-]+/, '').trim();
   }
+  function titleLabel(name) {
+    var n = String(name || '').replace(/\s+/g, ' ').trim();
+    if (!n) return '';
+    return n.charAt(0).toUpperCase() + n.slice(1);
+  }
+  function parseSequencePiece(piece) {
+    var re = new RegExp('^' + DUR_SRC + '\\s+(.+?)$', 'i');
+    var m = String(piece || '').trim().match(re);
+    if (!m) return null;
+    var seconds = parseDurationToken(m[1]);
+    var label = titleLabel(m[2]);
+    if (!seconds || !label || !nameOk(label)) return null;
+    var rest = /^rest(?:ing)?$/i.test(label);
+    return { seconds: seconds, name: rest ? 'Rest' : label, kind: rest ? 'rest' : 'work' };
+  }
+  // "N rounds of 0:30 swings, 0:15 rest, 0:30 bench, 0:45 rest"
+  function parseSequenceRounds(header) {
+    var re = /^(.*?)(?:,\s*|\s+)(\d+)\s+rounds?(?:\s+of)?\s+(.+)$/i;
+    var m = String(header || '').trim().match(re);
+    if (!m) return null;
+    var name = cleanName(m[1]);
+    var n = parseInt(m[2], 10);
+    if (!(n > 0) || n > 300) return null;
+    if (name && !nameOk(name)) return null;
+    var parts = m[3].split(/\s*(?:,|\/)\s*/);
+    if (parts.length < 2) return null;
+    var pieces = [];
+    for (var i = 0; i < parts.length; i++) {
+      var piece = parseSequencePiece(parts[i]);
+      if (!piece) return null;
+      pieces.push(piece);
+    }
+    if (pieces.length === 1) return null;
+    var per = 0;
+    for (var j = 0; j < pieces.length; j++) per += pieces[j].seconds;
+    if (!(per > 0) || n * per > MAX_BLOCK_S) return null;
+    return { name: name || 'Work', rounds: n, sequence: pieces };
+  }
   function takeRounds(header, paren) {
     var rounds = parseRounds(header);
     if (!rounds) rounds = parseRepeat(header);
+    if (!rounds) rounds = parseSequenceRounds(header);
     if (!rounds) return null;
     var noted = paren ? parseDurationToken(paren) : null;
-    var sum = rounds.rounds * (rounds.onSec + rounds.offSec);
+    var per = rounds.sequence ? 0 : (rounds.onSec + rounds.offSec);
+    if (rounds.sequence) {
+      for (var i = 0; i < rounds.sequence.length; i++) per += rounds.sequence[i].seconds;
+    }
+    var sum = rounds.rounds * per;
     var warning = '';
     if (noted && Math.abs(noted - sum) > 1) warning = 'Adds up to ' + fmt(sum) + ', the note says ' + fmt(noted) + '.';
-    return {
-      name: rounds.name, rounds: rounds.rounds,
-      onSec: rounds.onSec, offSec: rounds.offSec, warning: warning
+    var out = {
+      name: rounds.name, rounds: rounds.rounds, warning: warning
     };
+    if (rounds.sequence) out.sequence = rounds.sequence;
+    else { out.onSec = rounds.onSec; out.offSec = rounds.offSec; }
+    return out;
   }
   function parseWorkoutLine(raw) {
     var line = cleanLine(raw);
@@ -611,7 +763,22 @@
   function expandParsed(parsed) {
     var steps = [];
     var i, j, seg, step, notes;
-    if (parsed.rounds) {
+    if (parsed.sequence) {
+      notes = roundNotes(parsed.cue);
+      for (i = 1; i <= parsed.rounds; i++) {
+        for (j = 0; j < parsed.sequence.length; j++) {
+          seg = parsed.sequence[j];
+          var label = seg.kind === 'rest' ? 'Rest' : seg.name;
+          var stepName = label + ', round ' + i + ' of ' + parsed.rounds;
+          var stepCue = seg.kind === 'rest' ? '' : (parsed.cue || '');
+          step = makeStep(parsed.name, stepName, stepCue, seg.seconds, seg.kind);
+          if (seg.kind === 'rest') step.speak = 'Rest';
+          else if (notes[i]) step.speak = clipSpeech(seg.name + ', ' + notes[i], seg.seconds);
+          else step.speak = clipSpeech(stepCue ? (seg.name + '. ' + stepCue) : seg.name, seg.seconds);
+          steps.push(step);
+        }
+      }
+    } else if (parsed.rounds) {
       notes = roundNotes(parsed.cue);
       for (i = 1; i <= parsed.rounds; i++) {
         step = makeStep(parsed.name, 'Round ' + i + ' of ' + parsed.rounds + ', work', parsed.cue, parsed.onSec, 'work');
@@ -1623,7 +1790,14 @@
   function exerciseName(step) {
     if (!step) return '';
     var bits = roundBits(step);
-    if (bits && step.block) return step.block;
+    if (bits) {
+      var stripped = String(step.name || '')
+        .replace(/\bround\s+\d+\s+of\s+\d+\b/ig, ' ')
+        .replace(/[,\s]+/g, ' ')
+        .trim();
+      if (stripped && !/^(work|rest)$/i.test(stripped)) return stripped;
+      if (step.block) return step.block;
+    }
     if (step.block && step.block !== step.name) return step.block;
     return step.name || '';
   }
@@ -1643,7 +1817,10 @@
   function nextStepLine(step) {
     if (!step) return '';
     if (isRestStep(step)) {
-      return step.seconds ? ('Next: Rest, ' + fmt(step.seconds)) : 'Next: Rest';
+      var restBits = roundBits(step);
+      var restLine = step.seconds ? ('Next: Rest, ' + fmt(step.seconds)) : 'Next: Rest';
+      if (restBits) restLine += ', round ' + restBits.n + ' of ' + restBits.of;
+      return restLine;
     }
     var bits = roundBits(step);
     var parts = [];
@@ -1782,7 +1959,10 @@
   document.addEventListener('visibilitychange', function () {
     log({ type: 'visibility', state: document.visibilityState });
     if (document.visibilityState === 'visible') {
-      if (run.state === 'running' || run.state === 'paused') requestWakeLock();
+      if (run.state === 'running' || run.state === 'paused') {
+        requestWakeLock();
+        resumeAudioGraph();
+      }
       if (run.state === 'running') { tick(); resync(); loop(); }
       checkAudioBanner();
     }
@@ -1790,6 +1970,9 @@
 
   function onCtxState() {
     log({ type: 'ctx-state', state: ctx.state });
+    if (ctx.state === 'interrupted' || ctx.state === 'suspended') {
+      if (run.state === 'running' || run.state === 'paused') resumeAudioGraph();
+    }
     if (ctx.state === 'running') resync();
     checkAudioBanner();
   }
@@ -1879,8 +2062,8 @@
       if (master) master.gain.setTargetAtTime(settings.volume, ctx.currentTime, 0.02);
     });
     ui.test.addEventListener('click', function () {
-      if (!ensureAudio()) return;
-      startKeepAlive();
+      unlockAudioFromGesture();
+      if (!ctx) return;
       playChime(ctx.currentTime + 0.05);
       log({ type: 'test-chime' });
       setTimeout(function () { if (run.state === 'idle') stopKeepAlive(); }, 3500);
@@ -1955,6 +2138,23 @@
         stepCount: run.mode === 'workout' && run.steps ? run.steps.length : null,
         ctxState: ctx && ctx.state, ctxTime: ctx && ctx.currentTime, pendingEvents: events.length, wakeLock: !!wakeLock
       };
+    },
+    audio: function () {
+      var sessionNow = '';
+      try { sessionNow = (navigator.audioSession && navigator.audioSession.type) || ''; } catch (e) { sessionNow = ''; }
+      return {
+        sessionSet: lastSessionType,
+        sessionNow: sessionNow,
+        ctx: ctx ? ctx.state : '',
+        htmlPlayedInGesture: htmlPlayedInGesture,
+        htmlPlays: htmlPlayCount,
+        chimeKinds: Object.keys(chimeEls),
+        keepAlive: !!(keepAlive && keepAlive.src && !keepAlive.paused)
+      };
+    },
+    resumeAudio: function () {
+      resumeAudioGraph();
+      return { htmlPlays: htmlPlayCount, sessionSet: lastSessionType, ctx: ctx ? ctx.state : '' };
     },
     settings: function () { return JSON.parse(JSON.stringify(settings)); },
     parseWorkout: parseWorkout,

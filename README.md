@@ -25,7 +25,6 @@ Below the fold: the old interval and session presets, custom lengths, lead-in be
 `?test=1` adds 2 s / 5 s work presets, 1-second wheel steps through 1:30, and 10 to 30 s sessions for quick testing.
 
 ## iPhone notes
-- **Silent switch:** with "Ring with silent switch on" enabled (default), Start sets `navigator.audioSession.type = 'playback'`
-  (Safari 17+) and loops a near-silent audio clip. This puts iOS into its media-playback audio mode, so Web Audio ignores the ringer
-  switch. Side effect: iOS treats the app like a music player, so it **pauses music or podcasts from other apps**. Turn the
+- **Silent switch:** with "Ring with silent switch on" enabled (default), the Start tap sets `navigator.audioSession.type = 'playback'`
+  (Safari 16.4+) and plays the chime through an HTML audio element as well as Web Audio. The ringer switch mutes Web Audio oscillators, but not `<audio>` playback. A silent loop keeps that media session alive, and the context is resumed if iOS marks it `interrupted`. Side effect: iOS treats the app like a music player, so it **pauses music or podcasts from other apps**. Turn the
   option off to mix with your music; chimes then follow the silent switch.

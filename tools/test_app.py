@@ -208,6 +208,16 @@ with sync_playwright() as p:
     check('run screen hides the extra chrome',
           page.is_hidden('#r-label') and page.is_hidden('#r-every') and page.is_hidden('.stats') and page.is_hidden('#r-tbar-wrap') and page.locator('#audio-banner').count() == 0 and page.locator('#btn-audio-fix').count() == 0)
     check('pause and stop stay visible', page.is_visible('#btn-pause') and page.is_visible('#btn-stop') and page.inner_text('#btn-pause') == 'Pause' and page.inner_text('#btn-stop') == 'Stop')
+    aud = page.evaluate('window.__chime.audio()')
+    check('start sets playback and plays html audio in the tap',
+          aud['sessionSet'] == 'playback' and aud['htmlPlayedInGesture'] is True and aud['ctx'] == 'running'
+          and aud['keepAlive'] is True and aud['htmlPlays'] >= 4
+          and set(aud['chimeKinds']) >= set(['chime', 'start', 'beep', 'end']), aud)
+    html_kinds = [e['kind'] for e in logs(page, ['html-chime'])]
+    check('the start tap plays an html chime', 'start' in html_kinds, html_kinds)
+    resumed = page.evaluate('window.__chime.resumeAudio()')
+    check('an interrupted context resumes the media element',
+          resumed['htmlPlays'] > aud['htmlPlays'] and resumed['sessionSet'] == 'playback' and resumed['ctx'] == 'running', resumed)
     sched = logs(page, ['sched-chime'])
     times = []
     seen = set()
@@ -743,6 +753,8 @@ with sync_playwright() as p:
         ("paren duration", "Warm-up (45s): easy.", [("Warm-up", 45, "work")]),
         ("bullet, dash, minutes, smart quotes", "• Shadowbox – 3 minutes: “hands up.”", [("Shadowbox", 180, "work")]),
         ("1 round", "Squats, 1 round of 0:45 on, 0:15 off", round_steps(1, 45, 15)),
+        ("swings on/off rounds", "Swings, 4 rounds of 0:30 on, 0:15 off", round_steps(4, 30, 15)),
+        ("thrusters repeat", "Thrusters, 3 x 0:40 / 0:20", round_steps(3, 40, 20)),
         ("8 rounds of M:SS", "Shadowbox, 8 rounds of 3:00 on, 0:30 off", round_steps(8, 180, 30)),
         ("10 rounds without of", "Plank, 10 rounds 30 sec on 30 sec off", round_steps(10, 30, 30)),
         ("slash rounds", "Warm-up, 10 rounds of 0:30 on / 0:15 off", round_steps(10, 30, 15)),
@@ -809,6 +821,52 @@ with sync_playwright() as p:
     check("runner total is the sum of the steps",
           st["mode"] == "workout" and st["state"] == "running" and st["totalMs"] == 14000 and st["stepCount"] == 2 and st["stepName"] == "Shadowbox",
           st)
+    stop(page)
+    page.wait_for_timeout(80)
+
+    # Named steps inside one round: swings, rest, bench, rest. The (8 min)
+    # note is a check, not a separate block.
+    kb = "KB swings + DB bench, 4 rounds of 0:30 swings, 0:15 rest, 0:30 bench, 0:45 rest (8 min): Smooth and tall."
+    kb_plan = page.evaluate("(t) => window.__chime.parseWorkout(t)", kb)
+    kb_steps = kb_plan["steps"]
+    kb_expect = []
+    for rnd in range(1, 5):
+        kb_expect += [
+            ("Swings, round %d of 4" % rnd, 30, "work"),
+            ("Rest, round %d of 4" % rnd, 15, "rest"),
+            ("Bench, round %d of 4" % rnd, 30, "work"),
+            ("Rest, round %d of 4" % rnd, 45, "rest"),
+        ]
+    kb_got = [(s["name"], s["seconds"], s["kind"]) for s in kb_steps]
+    check("kb rounds are 16 steps in order",
+          kb_plan["ok"] is True and kb_plan["errors"] == [] and len(kb_plan["blocks"]) == 1
+          and kb_got == kb_expect and kb_plan["totalSeconds"] == 480,
+          (kb_plan["totalSeconds"], len(kb_plan["blocks"]), kb_got[:6], kb_plan["errors"]))
+    check("the 8 min note is not its own block",
+          kb_plan["blocks"][0]["name"] == "KB swings + DB bench" and kb_plan["blocks"][0]["seconds"] == 480
+          and "8 min" not in kb_plan["blocks"][0]["name"] and not kb_plan["blocks"][0].get("warning"),
+          kb_plan["blocks"][0].get("warning"))
+    mismatch = page.evaluate("(t) => window.__chime.parseWorkout(t)",
+        "KB swings + DB bench, 4 rounds of 0:30 swings, 0:15 rest, 0:30 bench, 0:45 rest (9 min): notes")
+    check("a wrong minute hint does not replace the steps",
+          mismatch["totalSeconds"] == 480 and len(mismatch["steps"]) == 16 and mismatch["blocks"][0].get("warning"),
+          (mismatch["totalSeconds"], mismatch["blocks"][0].get("warning")))
+
+    page.fill("#workout-text", "KB swings + DB bench, 4 rounds of 1 sec swings, 1 sec rest, 1 sec bench, 1 sec rest: Smooth and tall.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(5300)
+    seq = {
+        "step": page.inner_text("#r-interval"),
+        "next": page.inner_text("#r-next"),
+        "count": page.inner_text("#r-count"),
+    }
+    check("rest before bench round 2 names that step",
+          seq["step"] == "Rest, round 2 of 4" and seq["next"] == "Next: Bench, round 2 of 4. Smooth and tall."
+          and seq["count"].startswith("0:"),
+          seq)
+    page.screenshot(path=os.path.join(SCREENS, "sequence-rest.png"))
+    page.screenshot(path="/opt/cursor/artifacts/sequence-rest-390.png")
     stop(page)
     page.wait_for_timeout(80)
 
