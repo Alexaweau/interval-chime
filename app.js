@@ -395,7 +395,10 @@
 
   // ---------- pasted workout ----------
   var MAX_BLOCK_S = 6 * 3600;
-  var DUR_SRC = '(\\d+:\\d{1,2}(?::\\d{2})?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s))';
+  var DUR_BODY = '\\d+:\\d{1,2}(?::\\d{2})?|\\d+(?:\\.\\d+)?\\s*(?:hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)';
+  var DUR_SRC = '(' + DUR_BODY + ')';
+  // A rest of zero is still a rest: "0:00", "0s", or a bare "0".
+  var OFF_SRC = '(' + DUR_BODY + '|0)';
   var NAME_DUR_RE = new RegExp('^(.+?)\\s*[,\\-]\\s*' + DUR_SRC + '\\s*$', 'i');
   var REST_PATTERNS = [
     /rest(?:ing)?\s+(.+?)\s+after\s+(?:each|every)\s+(.+?)(?=[.]|$)/i,
@@ -424,6 +427,13 @@
     var mult = /^h/.test(unit) ? 3600 : (/^m/.test(unit) ? 60 : 1);
     var out = Math.round(n * mult);
     return out > 0 ? out : null;
+  }
+  function parseOffDuration(raw) {
+    var s = String(raw || '').trim().toLowerCase().replace(/\.\s*$/, '').replace(/\s+/g, ' ');
+    if (!s) return null;
+    if (/^0(?::00(?::00)?)?$/.test(s)) return 0;
+    if (/^0(?:\.0+)?\s*(?:hours?|hrs?|hr|h|minutes?|mins?|min|m|seconds?|secs?|sec|s)$/.test(s)) return 0;
+    return parseDurationToken(s);
   }
   function parseDurationLoose(raw) {
     var exact = parseDurationToken(raw);
@@ -497,7 +507,7 @@
   function parseRounds(header) {
     var re = new RegExp(
       '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s+rounds?(?:\\s+of)?\\s+' + DUR_SRC +
-      '\\s+(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC + '\\s+(?:off|rest)\\s*$',
+      '\\s+(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + OFF_SRC + '\\s+(?:off|rest)\\s*$',
       'i'
     );
     var m = header.match(re);
@@ -505,8 +515,8 @@
     var name = cleanName(m[1]);
     var n = parseInt(m[2], 10);
     var onSec = parseDurationToken(m[3]);
-    var offSec = parseDurationToken(m[4]);
-    if (!(n > 0) || n > 300 || !onSec || !offSec) return null;
+    var offSec = parseOffDuration(m[4]);
+    if (!(n > 0) || n > 300 || !(onSec > 0) || offSec == null) return null;
     if (name && !nameOk(name)) return null;
     if (n * (onSec + offSec) > MAX_BLOCK_S) return null;
     return { name: name || 'Work', rounds: n, onSec: onSec, offSec: offSec };
@@ -514,7 +524,7 @@
   function parseRepeat(header) {
     var re = new RegExp(
       '^(.*?)(?:[,\\-]\\s*|\\s+)?(\\d+)\\s*[x×]\\s*' + DUR_SRC +
-      '\\s*(?:on|work)?\\s*(?:/|,|and)\\s*' + DUR_SRC + '\\s*(?:off|rest)?\\s*$',
+      '\\s*(?:on|work)?\\s*(?:/|,|and)\\s*' + OFF_SRC + '\\s*(?:off|rest)?\\s*$',
       'i'
     );
     var m = header.match(re);
@@ -522,8 +532,8 @@
     var name = cleanName(m[1]);
     var n = parseInt(m[2], 10);
     var onSec = parseDurationToken(m[3]);
-    var offSec = parseDurationToken(m[4]);
-    if (!(n > 0) || n > 300 || !onSec || !offSec) return null;
+    var offSec = parseOffDuration(m[4]);
+    if (!(n > 0) || n > 300 || !(onSec > 0) || offSec == null) return null;
     if (name && !nameOk(name)) return null;
     if (n * (onSec + offSec) > MAX_BLOCK_S) return null;
     return { name: name || 'Work', rounds: n, onSec: onSec, offSec: offSec };
@@ -531,7 +541,7 @@
   function parseOnOffFor(header) {
     var re = new RegExp(
       '^(.*?)(?:[,\\-]\\s*|\\s+)?' + DUR_SRC +
-      '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC +
+      '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + OFF_SRC +
       '\\s*(?:off|rest)?\\s+for\\s+' + DUR_SRC + '\\s*$',
       'i'
     );
@@ -539,9 +549,9 @@
     if (!m) return null;
     var name = cleanName(m[1]);
     var onSec = parseDurationToken(m[2]);
-    var offSec = parseDurationToken(m[3]);
+    var offSec = parseOffDuration(m[3]);
     var total = parseDurationToken(m[4]);
-    if (!onSec || !offSec || !total) return null;
+    if (!(onSec > 0) || offSec == null || !(total > 0)) return null;
     if (name && !nameOk(name)) return null;
     if (total > MAX_BLOCK_S) return null;
     return { name: name || 'Work', seconds: total, workSec: onSec, restSec: offSec };
@@ -591,14 +601,14 @@
   }
   function findOnOffPattern(text) {
     var re = new RegExp(
-      DUR_SRC + '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + DUR_SRC + '\\s*(?:off|rest)?',
+      DUR_SRC + '\\s*(?:on|work)(?:\\s*(?:/|,|and)\\s*|\\s+)' + OFF_SRC + '\\s*(?:off|rest)?',
       'i'
     );
     var m = String(text || '').match(re);
     if (!m) return null;
     var onSec = parseDurationToken(m[1]);
-    var offSec = parseDurationToken(m[2]);
-    if (!onSec || !offSec) return null;
+    var offSec = parseOffDuration(m[2]);
+    if (!(onSec > 0) || offSec == null) return null;
     return { match: m[0], onSec: onSec, offSec: offSec };
   }
   function findRestPattern(text) {
@@ -611,6 +621,10 @@
   function expandOnOff(total, work, rest) {
     var out = [];
     var left = total;
+    if (!(rest > 0)) {
+      if (total > 0 && work > 0) out.push({ kind: 'work', seconds: total });
+      return out;
+    }
     var guard = 0;
     while (left > 0 && guard++ < 500) {
       var w = Math.min(work, left);
@@ -657,11 +671,12 @@
     var re = new RegExp('^' + DUR_SRC + '\\s+(.+?)$', 'i');
     var m = String(piece || '').trim().match(re);
     if (!m) return null;
-    var seconds = parseDurationToken(m[1]);
+    var seconds = parseOffDuration(m[1]);
     var label = titleLabel(m[2]);
-    if (!seconds || !label || !nameOk(label)) return null;
-    var rest = /^rest(?:ing)?$/i.test(label);
-    return { seconds: seconds, name: rest ? 'Rest' : label, kind: rest ? 'rest' : 'work' };
+    if (seconds == null || !label || !nameOk(label)) return null;
+    var restName = /^rest(?:ing)?$/i.test(label);
+    if (!(seconds > 0) && !restName) return null;
+    return { seconds: seconds, name: restName ? 'Rest' : label, kind: restName ? 'rest' : 'work' };
   }
   // "N rounds of 0:30 swings, 0:15 rest, 0:30 bench, 0:45 rest"
   function parseSequenceRounds(header) {
@@ -768,6 +783,7 @@
       for (i = 1; i <= parsed.rounds; i++) {
         for (j = 0; j < parsed.sequence.length; j++) {
           seg = parsed.sequence[j];
+          if (!(seg.seconds > 0)) continue;
           var label = seg.kind === 'rest' ? 'Rest' : seg.name;
           var stepName = label + ', round ' + i + ' of ' + parsed.rounds;
           var stepCue = seg.kind === 'rest' ? '' : (parsed.cue || '');
@@ -784,7 +800,7 @@
         step = makeStep(parsed.name, 'Round ' + i + ' of ' + parsed.rounds + ', work', parsed.cue, parsed.onSec, 'work');
         step.speak = notes[i] ? ('Round ' + i + ', ' + notes[i]) : ('Round ' + i);
         steps.push(step);
-        steps.push(makeStep(parsed.name, 'Rest', '', parsed.offSec, 'rest'));
+        if (parsed.offSec > 0) steps.push(makeStep(parsed.name, 'Rest', '', parsed.offSec, 'rest'));
       }
     } else if (parsed.workSec) {
       var segs = expandOnOff(parsed.seconds, parsed.workSec, parsed.restSec);
@@ -895,15 +911,50 @@
     s = s.replace(/\u00A0/g, ' ');
     return breakBeforeStepHeaders(s);
   }
+  function lineLooksAttempted(raw) {
+    var line = cleanLine(raw);
+    if (!line) return false;
+    if (/\d+\s+rounds?\b/i.test(line)) return true;
+    if (/\d+\s*[x×]\s*\d/i.test(line)) return true;
+    var header = splitHeaderCue(line).header.replace(/[.]+$/g, '').trim();
+    if (!header) return false;
+    if (commaOrDashDuration(header)) return true;
+    var split = stripTrailingParen(header);
+    if (split.paren && (parseDurationToken(split.paren) || parseOffDuration(split.paren) === 0)) return true;
+    if (parseSimple(split.main) || parseSimple(header)) return true;
+    return false;
+  }
+  function skippedLine(lineNo, raw, reason) {
+    return { error: true, line: lineNo, text: cleanLine(raw), reason: reason };
+  }
   function parseWorkout(text) {
     var blocks = [], steps = [], errors = [];
     var lines = prepareWorkoutText(text).split('\n');
     for (var i = 0; i < lines.length; i++) {
-      if (!String(lines[i] || '').trim()) continue;
-      if (blocks.length >= 200) break;
-      var parsed = parseWorkoutLine(lines[i]);
-      if (!parsed || parsed.error) continue;
+      var rawLine = String(lines[i] || '');
+      if (!rawLine.trim()) continue;
+      if (blocks.length >= 200) {
+        var cap = skippedLine(i + 1, rawLine, 'Too many lines. This one and the rest were left out.');
+        errors.push(cap);
+        blocks.push(cap);
+        break;
+      }
+      var parsed = parseWorkoutLine(rawLine);
+      if (!parsed || parsed.error) {
+        if (lineLooksAttempted(rawLine)) {
+          var missed = skippedLine(i + 1, rawLine, 'Could not read this line, so it was left out.');
+          errors.push(missed);
+          blocks.push(missed);
+        }
+        continue;
+      }
       var block = expandParsed(parsed);
+      if (!block.steps.length || !(block.seconds > 0)) {
+        var empty = skippedLine(i + 1, rawLine, 'This line has no time, so it was left out.');
+        errors.push(empty);
+        blocks.push(empty);
+        continue;
+      }
       blocks.push(block);
       for (var s = 0; s < block.steps.length; s++) steps.push(block.steps[s]);
     }
@@ -981,13 +1032,13 @@
     ui.workoutStart.hidden = false;
     ui.workoutStart.textContent = 'Start';
     var plan = workoutPlan;
-    if (!plan.steps.length) {
+    if (!plan.steps.length && !(plan.errors && plan.errors.length)) {
       ui.workoutPreview.hidden = true;
       ui.workoutStart.disabled = true;
       return;
     }
     ui.workoutPreview.hidden = false;
-    ui.workoutStart.disabled = false;
+    ui.workoutStart.disabled = !plan.steps.length;
     var totalLine = document.createElement('p');
     totalLine.className = 'summary workout-total';
     totalLine.textContent = workoutSummaryText(plan);
@@ -1309,7 +1360,7 @@
     var totalSec = 0;
     for (var i = 0; i < source.length; i++) {
       var src = source[i];
-      if (!(src.seconds > 0)) return null;
+      if (!(src.seconds > 0)) continue;
       steps.push({ block: src.block, name: src.name, cue: src.cue, seconds: src.seconds, kind: src.kind, speak: src.speak });
       totalSec += src.seconds;
     }

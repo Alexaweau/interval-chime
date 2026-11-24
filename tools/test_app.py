@@ -870,6 +870,57 @@ with sync_playwright() as p:
     stop(page)
     page.wait_for_timeout(80)
 
+    # A zero rest is still a round. It adds the work and no rest step.
+    bag = "Double-end bag, 4 rounds of 2 sec on, 2 sec off: Jab."
+    bag_plan = page.evaluate("(t) => window.__chime.parseWorkout(t)", bag)
+    rope = "Jump rope easy, 1 round of 1:30 on, 0:00 off\n" + bag
+    rope_plan = page.evaluate("(t) => window.__chime.parseWorkout(t)", rope)
+    rope_steps = rope_plan["steps"]
+    check("zero rest keeps the jump rope and adds 1:30",
+          rope_plan["ok"] is True and rope_plan["errors"] == []
+          and len(rope_steps) == len(bag_plan["steps"]) + 1
+          and rope_plan["totalSeconds"] == bag_plan["totalSeconds"] + 90
+          and rope_steps[0]["block"] == "Jump rope easy" and rope_steps[0]["seconds"] == 90
+          and rope_steps[0]["kind"] == "work" and rope_steps[1]["kind"] == "work"
+          and rope_steps[1]["block"] == "Double-end bag"
+          and all(s["kind"] != "rest" or s["block"] != "Jump rope easy" for s in rope_steps),
+          (len(rope_steps), rope_plan["totalSeconds"], rope_steps[0], rope_plan["errors"]))
+    zero_forms = [
+        "Jump rope easy, 1 round of 1:30 on, 0 off",
+        "Jump rope easy, 1 round of 1:30 on, 0s rest",
+        "Jump rope easy, 1 round of 90 sec on, 0 sec off",
+        "Jump rope easy, 1 round of 1:30 on, 0 seconds rest",
+    ]
+    for form in zero_forms:
+        got = page.evaluate("(t) => window.__chime.parseWorkout(t)", form)
+        check("zero rest variant: " + form.split(", ")[-1],
+              got["ok"] is True and got["errors"] == [] and len(got["steps"]) == 1
+              and got["steps"][0]["seconds"] == 90 and got["steps"][0]["kind"] == "work"
+              and got["totalSeconds"] == 90 and got["blocks"][0]["name"] == "Jump rope easy",
+              (len(got["steps"]), got["totalSeconds"], got["errors"]))
+    page.fill("#workout-text", rope + "\nShadowbox, 3 rounds of banana")
+    page.wait_for_timeout(40)
+    warned = page.evaluate("window.__chime.parseWorkout(document.getElementById('workout-text').value)")
+    preview = page.inner_text("#workout-preview")
+    check("an unreadable line is named in the preview",
+          len(warned["errors"]) == 1 and "Shadowbox, 3 rounds of banana" in warned["errors"][0]["text"]
+          and "Shadowbox, 3 rounds of banana" in preview and "left out" in preview.lower()
+          and "Jump rope easy" in preview and warned["steps"][0]["block"] == "Jump rope easy"
+          and warned["totalSeconds"] == rope_plan["totalSeconds"],
+          (warned["errors"], preview[:400]))
+    prose = page.evaluate("(t) => window.__chime.parseWorkout(t)", "just stretch\nWarm up slowly.")
+    check("plain prose is still not a warning", prose["errors"] == [] and prose["steps"] == [], prose["errors"])
+    page.fill("#workout-text", "Jump rope easy, 1 round of 2 sec on, 0:00 off\nRings, 3 sec: Smooth swings.")
+    page.wait_for_timeout(40)
+    page.click("#btn-start-workout")
+    page.wait_for_timeout(200)
+    rope_now = {"step": page.inner_text("#r-interval"), "next": page.inner_text("#r-next")}
+    check("zero rest points the next label at the following step",
+          "Jump rope easy" in rope_now["step"] and rope_now["next"] == "Next: Rings. Smooth swings.",
+          rope_now)
+    stop(page)
+    page.wait_for_timeout(80)
+
     # ---------- 6d. every iPhone size fits, buttons stay on screen ----------
     meta = page.evaluate("document.querySelector('meta[name=viewport]').content")
     check('viewport meta fits the device', 'width=device-width' in meta and 'initial-scale=1' in meta and 'viewport-fit=cover' in meta, meta)
